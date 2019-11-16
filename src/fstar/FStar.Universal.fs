@@ -130,6 +130,7 @@ let init_env deps : TcEnv.env =
   (* Set up some tactics callbacks *)
   let env = { env with synth_hook       = FStar.Tactics.Interpreter.synthesize } in
   let env = { env with splice           = FStar.Tactics.Interpreter.splice} in
+  let env = { env with mpreprocess      = FStar.Tactics.Interpreter.mpreprocess} in
   let env = { env with postprocess      = FStar.Tactics.Interpreter.postprocess} in
   let env = { env with is_native_tactic = FStar.Tactics.Native.is_native_tactic } in
   env.solver.init env;
@@ -139,9 +140,13 @@ let init_env deps : TcEnv.env =
 (* Interactive mode: checking a fragment of a code                     *)
 (***********************************************************************)
 let tc_one_fragment curmod (env:TcEnv.env_t) frag =
+  // We use file_of_range instead of `Options.file_list ()` because no file
+  // is passed as a command-line argument in LSP mode.
+  let fname env = if Options.lsp_server () then Range.file_of_range (TcEnv.get_range env)
+                  else List.hd (Options.file_list ()) in
   let acceptable_mod_name modul =
     (* Interface is sent as the first chunk, so we must allow repeating the same module. *)
-    Parser.Dep.lowercase_module_name (List.hd (Options.file_list ())) =
+    Parser.Dep.lowercase_module_name (fname env) =
     String.lowercase (string_of_lid modul.name) in
 
   let range_of_first_mod_decl modul =
@@ -168,7 +173,7 @@ let tc_one_fragment curmod (env:TcEnv.env_t) frag =
     begin
        let msg : string =
            BU.format1 "Interactive mode only supports a single module at the top-level. Expected module %s"
-                       (Parser.Dep.module_name_of_file (List.hd (Options.file_list ())))
+                       (Parser.Dep.module_name_of_file (fname env))
        in
        Errors.raise_error (Errors.Fatal_NonSingletonTopLevelModule, msg)
                              (range_of_first_mod_decl ast_modul)
@@ -262,42 +267,47 @@ let tc_one_file
    * AR: smt encode_modul functions are now here instead of in Tc.fs
    *     this is common smt postprocessing for fresh module and module read from cache
    *)
+  let maybe_restore_opts () : unit =
+    if not (Options.interactive ()) then
+      Options.restore_cmd_line_options true |> ignore
+  in
   let post_smt_encoding (_:unit) :unit =
-    FStar.SMTEncoding.Z3.refresh ();
-    if not (Options.interactive ())
-    then Options.restore_cmd_line_options true |> ignore
-    else ()
+    FStar.SMTEncoding.Z3.refresh ()
   in
   let maybe_extract_mldefs tcmod env =
       if Options.codegen() = None
       || not (Options.should_extract tcmod.name.str)
       then None, 0
-      else FStar.Util.record_time (fun () ->
-            let _, defs = FStar.Extraction.ML.Modul.extract env tcmod in
-            defs)
+      else
+        FStar.Util.record_time (fun () ->
+            with_env env (fun env ->
+              let _, defs = FStar.Extraction.ML.Modul.extract env tcmod in
+              defs)
+          )
   in
   let maybe_extract_ml_iface tcmod env =
-       if Options.codegen() = None
-       then env, 0
-       else let (env, _extracted_iface), iface_extract_time =
-              FStar.Util.record_time (fun () ->
-                  FStar.Extraction.ML.Modul.extract_iface env tcmod)
-            in
-            env, iface_extract_time
+      if Options.codegen() = None
+      then env, 0
+      else
+        FStar.Util.record_time (fun () ->
+            let env, _ = with_env env (fun env ->
+                  FStar.Extraction.ML.Modul.extract_iface env tcmod) in
+            env
+          )
   in
   let tc_source_file () =
       let fmod, env = parse env pre_fn fn in
       let mii = FStar.Syntax.DsEnv.inclusion_info env.env_tcenv.dsenv fmod.name in
       let check_mod () =
-          let ((tcmod, smt_decls), env), tc_time =
-            FStar.Util.record_time (fun () ->
-               with_tcenv_of_env env (fun tcenv ->
+          let check env =
+              with_tcenv_of_env env (fun tcenv ->
                  let _ = match tcenv.gamma with
                          | [] -> ()
                          | _ -> failwith "Impossible: gamma contains leaked names"
                  in
                  let modul, env = Tc.check_module tcenv fmod (is_some pre_fn) in
                  //AR: encode the module to to smt
+                 maybe_restore_opts ();
                  let smt_decls =
                    if (not (Options.lax()))
                    then let smt_decls = FStar.SMTEncoding.Encode.encode_modul env modul in
@@ -305,11 +315,18 @@ let tc_one_file
                         smt_decls
                    else [], []
                  in
-                 ((modul, smt_decls), env)
-            ))
+                 ((modul, smt_decls), env))
+            in
+
+          let ((tcmod, smt_decls), env) =
+            Profiling.profile (fun () -> check env)
+                              (Some fmod.name.str)
+                              "FStar.Universal.tc_source_file"
           in
-          let extracted_defs, extract_time = with_env env (maybe_extract_mldefs tcmod) in
-          let env, iface_extraction_time = with_env env (maybe_extract_ml_iface tcmod) in
+
+          let tc_time = 0 in
+          let extracted_defs, extract_time = maybe_extract_mldefs tcmod env in
+          let env, iface_extraction_time = maybe_extract_ml_iface tcmod env in
           {
             checked_module=tcmod;
             tc_time=tc_time;
@@ -367,19 +384,21 @@ let tc_one_file
                         (FStar.TypeChecker.Normalize.erase_universes tcenv)
             in
             let env = FStar.TypeChecker.Tc.load_checked_module tcenv tcmod in
+            maybe_restore_opts ();
             //AR: encode smt module and do post processing
             if (not (Options.lax())) then begin
-              FStar.SMTEncoding.Encode.encode_modul_from_cache env tcmod.name smt_decls;
+              FStar.SMTEncoding.Encode.encode_modul_from_cache env tcmod smt_decls;
               post_smt_encoding ()
             end;
             (), env
         in
 
         let env =
-          Options.profile
+          Profiling.profile
             (fun () -> with_tcenv_of_env env (extend_tcenv tcmod) |> snd)
-            (fun _ -> BU.format1 "Extending environment with module %s"
-                                 tcmod.name.str) in
+            None
+            "FStar.Universal.extend_tcenv"
+        in
 
 
         (* If we have to extract this module, then do it first *)
@@ -387,13 +406,13 @@ let tc_one_file
             if Options.codegen()<>None
             && Options.should_extract tcmod.name.str
             && (not tcmod.is_interface || Options.codegen()=Some Options.Kremlin)
-            then with_env env (fun env ->
-                   let extracted_defs, _extraction_time = maybe_extract_mldefs tcmod env in
-                   extracted_defs)
+            then
+                 let extracted_defs, _extraction_time = maybe_extract_mldefs tcmod env in
+                 extracted_defs
             else None
         in
 
-        let env, _time = with_env env (maybe_extract_ml_iface tcmod) in
+        let env, _time = maybe_extract_ml_iface tcmod env in
 
         tc_result,
         mllib,
@@ -432,12 +451,12 @@ let tc_one_file_from_remaining (remaining:list<string>) (env:uenv)
         | intf :: impl :: remaining when needs_interleaving intf impl ->
           let m, mllib, env = tc_one_file env (Some intf) impl
                                           (impl |> FStar.Parser.Dep.parsing_data_of deps) in
-          remaining, ([m], mllib, env)
+          remaining, (m, mllib, env)
         | intf_or_impl :: remaining ->
           let m, mllib, env = tc_one_file env None intf_or_impl
                                           (intf_or_impl |> FStar.Parser.Dep.parsing_data_of deps) in
-          remaining, ([m], mllib, env)
-        | [] -> [], ([], None, env)
+          remaining, (m, mllib, env)
+        | [] -> failwith "Impossible: Empty remaining modules"
   in
   remaining, nmods, mllib, env
 
@@ -449,8 +468,10 @@ let rec tc_fold_interleave (deps:FStar.Parser.Dep.deps)  //used to query parsing
     | [] -> acc
     | _  ->
       let mods, mllibs, env = acc in
-      let remaining, nmods, mllib, env = tc_one_file_from_remaining remaining env deps in
-      tc_fold_interleave deps (mods@nmods, mllibs@as_list mllib, env) remaining
+      let remaining, nmod, mllib, env = tc_one_file_from_remaining remaining env deps in
+      if not (Options.profile_group_by_decls())
+      then Profiling.report_and_clear (Ident.string_of_lid nmod.checked_module.name);
+      tc_fold_interleave deps (mods@[nmod], mllibs@as_list mllib, env) remaining
 
 (***********************************************************************)
 (* Batch mode: checking many files                                     *)

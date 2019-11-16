@@ -123,6 +123,7 @@ val set_expect_typ: env -> bool -> env
 val empty_env: FStar.Parser.Dep.deps -> env
 val current_module: env -> lident
 val set_current_module: env -> lident -> env
+val open_modules: env -> list<(lident * modul)>
 val open_modules_and_namespaces: env -> list<lident>
 val iface_decls : env -> lident -> option<(list<Parser.AST.decl>)>
 val set_iface_decls: env -> lident -> list<Parser.AST.decl> -> env
@@ -149,7 +150,7 @@ val try_lookup_dc_by_field_name: env -> lident -> option<(lident * bool)>
 val try_lookup_definition: env -> lident -> option<term>
 val is_effect_name: env -> lident -> bool
 val find_all_datacons: env -> lident -> option<list<lident>>
-val lookup_letbinding_quals: env -> lident -> list<qualifier>
+val lookup_letbinding_quals_and_attrs: env -> lident -> list<qualifier> * list<attribute>
 val resolve_module_name: env:env -> lid:lident -> honor_ns:bool -> option<lident>
 val fail_if_qualified_by_curmodule: env -> lident -> unit
 val resolve_to_fully_qualified_name : env:env -> l:lident -> option<lident>

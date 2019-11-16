@@ -292,7 +292,7 @@ and term_to_string x =
             U.format1 "quote (%s)" (term_to_string tm)
         end
 
-      | Tm_meta(t, Meta_pattern ps) ->
+      | Tm_meta(t, Meta_pattern (_, ps)) ->
         let pats = ps |> List.map (fun args -> args |> List.map (fun (t, _) -> term_to_string t) |> String.concat "; ") |> String.concat "\/" in
         U.format2 "{:pattern %s} %s" pats (term_to_string t)
 
@@ -350,11 +350,7 @@ and term_to_string x =
       | Tm_match(head, branches) ->
         U.format2 "(match %s with\n\t| %s)"
           (term_to_string head)
-          (U.concat_l "\n\t|" (branches |> List.map (fun (p,wopt,e) ->
-                U.format3 "%s %s -> %s"
-                            (p |> pat_to_string)
-                            (match wopt with | None -> "" | Some w -> U.format1 "when %s" (w |> term_to_string))
-                            (e |> term_to_string))))
+          (U.concat_l "\n\t|" (branches |> List.map branch_to_string))
       | Tm_uinst(t, us) ->
         if (Options.print_universes())
         then U.format2 "%s<%s>" (term_to_string t) (univs_to_string us)
@@ -363,6 +359,11 @@ and term_to_string x =
       | Tm_unknown -> "_"
   end
 
+and branch_to_string (p, wopt, e) : string =
+    U.format3 "%s %s -> %s"
+                (p |> pat_to_string)
+                (match wopt with | None -> "" | Some w -> U.format1 "when %s" (w |> term_to_string))
+                (e |> term_to_string)
 and ctx_uvar_to_string ctx_uvar =
     format4 "(* %s *)\n(%s |- %s : %s)"
             (ctx_uvar.ctx_uvar_reason)
@@ -426,12 +427,6 @@ and lbs_to_string quals lbs =
 and attrs_to_string = function
     | [] -> ""
     | tms -> U.format1 "[@ %s]" (List.map (fun t -> paren (term_to_string t)) tms |> String.concat "; ")
-
-and lcomp_to_string lc =
-    if Options.print_effect_args () then
-        comp_to_string (lcomp_comp lc)
-    else
-        U.format2 "%s %s" (sli lc.eff_name) (term_to_string lc.res_typ)
 
 //and uvar_t_to_string (uv, k) =
 //   if false && (Options.print_real_names())
@@ -558,7 +553,7 @@ and cflags_to_string fs = FStar.Common.string_of_list cflag_to_string fs
 and formula_to_string phi = term_to_string phi
 
 and metadata_to_string = function
-    | Meta_pattern ps ->
+    | Meta_pattern (_, ps) ->
         let pats = ps |> List.map (fun args -> args |> List.map (fun (t, _) -> term_to_string t) |> String.concat "; ") |> String.concat "\/" in
         U.format1 "{Meta_pattern %s}" pats
 
@@ -626,9 +621,62 @@ let action_to_string a =
         (term_to_string a.action_typ)
         (term_to_string a.action_defn)
 
+let wp_eff_combinators_to_string combs =
+  let tscheme_opt_to_string = function
+    | Some ts -> tscheme_to_string ts
+    | None -> "None" in
+
+  U.format "{\n\
+    ret_wp       = %s\n\
+  ; bind_wp      = %s\n\
+  ; stronger     = %s\n\
+  ; if_then_else = %s\n\
+  ; ite_wp       = %s\n\
+  ; close_wp     = %s\n\
+  ; trivial      = %s\n\
+  ; repr         = %s\n\
+  ; return_repr  = %s\n\
+  ; bind_repr    = %s\n\
+  }\n"
+    [ tscheme_to_string combs.ret_wp;
+      tscheme_to_string combs.bind_wp;
+      tscheme_to_string combs.stronger;
+      tscheme_to_string combs.if_then_else;
+      tscheme_to_string combs.ite_wp;
+      tscheme_to_string combs.close_wp;
+      tscheme_to_string combs.trivial;
+      tscheme_opt_to_string combs.repr;
+      tscheme_opt_to_string combs.return_repr;
+      tscheme_opt_to_string combs.bind_repr ]
+
+let layered_eff_combinators_to_string combs =
+  let to_str (ts_t, ts_ty) =
+    U.format2 "(%s) : (%s)"
+      (tscheme_to_string ts_t) (tscheme_to_string ts_ty) in
+
+  U.format "{\n\
+    l_base_effect = %s\n\
+  ; l_repr = %s\n\
+  ; l_return = %s\n\
+  ; l_bind = %s\n\
+  ; l_subcomp = %s\n\
+  ; l_if_then_else = %s\n
+  }\n"
+    [ Ident.string_of_lid combs.l_base_effect;
+      to_str combs.l_repr;
+      to_str combs.l_return;
+      to_str combs.l_bind;
+      to_str combs.l_subcomp;
+      to_str combs.l_if_then_else ]
+
+let eff_combinators_to_string = function
+  | Primitive_eff combs
+  | DM4F_eff combs -> wp_eff_combinators_to_string combs
+  | Layered_eff combs -> layered_eff_combinators_to_string combs
+
 let eff_decl_to_string' for_free r q ed =
  if not (Options.ugly()) then
-    let d = Resugar.resugar_eff_decl for_free r q ed in
+    let d = Resugar.resugar_eff_decl r q ed in
     let d = ToDocument.decl_to_document d in
     Pp.pretty_string (float_of_string "1.0") 100 d
  else
@@ -636,44 +684,30 @@ let eff_decl_to_string' for_free r q ed =
         actions |>
         List.map action_to_string |>
         String.concat ",\n\t" in
-    U.format "new_effect%s { \
+    let eff_name = if SU.is_layered ed then "layered_effect" else "new_effect" in
+    U.format "%s%s { \
       %s%s %s : %s \n  \
-        return_wp   = %s\n\
-      ; bind_wp     = %s\n\
-      ; if_then_else= %s\n\
-      ; ite_wp      = %s\n\
-      ; stronger    = %s\n\
-      ; close_wp    = %s\n\
-      ; assert_p    = %s\n\
-      ; assume_p    = %s\n\
-      ; null_wp     = %s\n\
-      ; trivial     = %s\n\
-      ; repr        = %s\n\
-      ; bind_repr   = %s\n\
-      ; return_repr = %s\n\
+        %s\n\
       and effect_actions\n\t%s\n}\n"
-        [(if for_free then "_for_free " else "");
+        [eff_name;
+         (if for_free then "_for_free " else "");
          lid_to_string ed.mname;
          enclose_universes <| univ_names_to_string ed.univs;
          binders_to_string " " ed.binders;
-         term_to_string ed.signature;
-         tscheme_to_string ed.ret_wp;
-         tscheme_to_string ed.bind_wp;
-         tscheme_to_string ed.if_then_else;
-         tscheme_to_string ed.ite_wp;
-         tscheme_to_string ed.stronger;
-         tscheme_to_string ed.close_wp;
-         tscheme_to_string ed.assert_p;
-         tscheme_to_string ed.assume_p;
-         tscheme_to_string ed.null_wp;
-         tscheme_to_string ed.trivial;
-         term_to_string ed.repr;
-         tscheme_to_string ed.bind_repr;
-         tscheme_to_string ed.return_repr;
+         tscheme_to_string ed.signature;
+         eff_combinators_to_string ed.combinators;
          actions_to_string ed.actions]
 
 let eff_decl_to_string for_free ed =
   eff_decl_to_string' for_free Range.dummyRange [] ed
+
+let sub_eff_to_string se =
+  let tsopt_to_string ts_opt =
+    if is_some ts_opt then ts_opt |> must |> tscheme_to_string
+    else "<None>" in
+  U.format4 "sub_effect %s ~> %s : lift = %s ;; lift_wp = %s"
+    (lid_to_string se.source) (lid_to_string se.target)
+    (tsopt_to_string se.lift) (tsopt_to_string se.lift_wp)
 
 let rec sigelt_to_string (x: sigelt) =
  // if not (Options.ugly()) then
@@ -693,6 +727,7 @@ let rec sigelt_to_string (x: sigelt) =
       | Sig_pragma(SetOptions s) -> U.format1 "#set-options \"%s\"" s
       | Sig_pragma(PushOptions None) -> "#push-options"
       | Sig_pragma(PushOptions (Some s)) -> U.format1 "#push-options \"%s\"" s
+      | Sig_pragma(RestartSolver) -> "#restart-solver"
       | Sig_pragma(PopOptions) -> "#pop-options"
       | Sig_inductive_typ(lid, univs, tps, k, _, _) ->
         let quals_str = quals_to_string' x.sigquals in
@@ -718,22 +753,8 @@ let rec sigelt_to_string (x: sigelt) =
       | Sig_let(lbs, _) -> lbs_to_string x.sigquals lbs
       | Sig_main(e) -> U.format1 "let _ = %s" (term_to_string e)
       | Sig_bundle(ses, _) -> "(* Sig_bundle *)" ^ (List.map sigelt_to_string ses |> String.concat "\n")
-      | Sig_new_effect(ed) -> eff_decl_to_string' false x.sigrng x.sigquals ed
-      | Sig_new_effect_for_free (ed) -> eff_decl_to_string' true x.sigrng x.sigquals ed
-      | Sig_sub_effect (se) ->
-        let lift_wp = match se.lift_wp, se.lift with
-          // TODO pretty-print this better
-          | None, None ->
-              failwith "impossible"
-          | Some lift_wp, _ ->
-              lift_wp
-          | _, Some lift ->
-              lift
-        in
-        let us, t = Subst.open_univ_vars (fst lift_wp) (snd lift_wp) in
-        U.format4 "sub_effect %s ~> %s : <%s> %s"
-            (lid_to_string se.source) (lid_to_string se.target)
-            (univ_names_to_string us) (term_to_string t)
+      | Sig_new_effect(ed) -> eff_decl_to_string' (SU.is_dm4f ed) x.sigrng x.sigquals ed
+      | Sig_sub_effect (se) -> sub_eff_to_string se
       | Sig_effect_abbrev(l, univs, tps, c, flags) ->
         if (Options.print_universes())
         then let univs, t = Subst.open_univ_vars univs (mk (Tm_arrow(tps, c)) None Range.dummyRange) in
@@ -746,7 +767,7 @@ let rec sigelt_to_string (x: sigelt) =
         U.format2 "splice[%s] (%s)" (String.concat "; " <| List.map Ident.string_of_lid lids) (term_to_string t)
       in
       match x.sigattrs with
-      | [] -> basic
+      | [] -> "[@ ]" ^ "\n" ^ basic //It is important to keep this empty attribute marker since the Vale type extractor uses it as a delimiter
       | _ -> attrs_to_string x.sigattrs ^ "\n" ^ basic
 
 let format_error r msg = format2 "%s: %s\n" (Range.string_of_range r) msg
@@ -762,18 +783,18 @@ let rec modul_to_string (m:modul) =
                                                                      (List.map sigelt_to_string m.exports |> String.concat "\n")
 
 
-let abs_ascription_to_string ascription =
-  let strb = U.new_string_builder () in
-  begin match ascription with
-      | None -> U.string_builder_append strb "None"
-      | Some (Inl lc) ->
-          U.string_builder_append strb "Some Inr " ;
-          U.string_builder_append strb (Ident.text_of_lid lc.eff_name)
-      | Some (Inr lid) ->
-          U.string_builder_append strb "Some Inr " ;
-          U.string_builder_append strb (Ident.text_of_lid lid)
-  end ;
-  U.string_of_string_builder strb
+//let abs_ascription_to_string ascription =
+//  let strb = U.new_string_builder () in
+//  begin match ascription with
+//      | None -> U.string_builder_append strb "None"
+//      | Some (Inl lc) ->
+//          U.string_builder_append strb "Some Inr " ;
+//          U.string_builder_append strb (Ident.text_of_lid lc.eff_name)
+//      | Some (Inr lid) ->
+//          U.string_builder_append strb "Some Inr " ;
+//          U.string_builder_append strb (Ident.text_of_lid lid)
+//  end ;
+//  U.string_of_string_builder strb
 
 let list_to_string f elts =
     match elts with

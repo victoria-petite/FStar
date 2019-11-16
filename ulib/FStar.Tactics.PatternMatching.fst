@@ -23,6 +23,8 @@
 
 module FStar.Tactics.PatternMatching
 
+open FStar.Tactics
+
 /// Contents
 /// ========
 ///
@@ -56,8 +58,6 @@ module FStar.Tactics.PatternMatching
 /// `a` and `b` for further inspection?
 ///
 /// Here's a basic (but cumbersome!) implementation:
-
-open FStar.Tactics
 
 let fetch_eq_side () : Tac (term * term) =
   let g = cur_goal () in
@@ -216,7 +216,7 @@ let term_head t : Tac string =
   | Tv_Refine x t -> "Tv_Refine"
   | Tv_Const cst -> "Tv_Const"
   | Tv_Uvar i t -> "Tv_Uvar"
-  | Tv_Let r b t1 t2 -> "Tv_Let"
+  | Tv_Let r attrs b t1 t2 -> "Tv_Let"
   | Tv_Match t branches -> "Tv_Match"
   | Tv_AscribedT _ _ _ -> "Tv_AscribedT"
   | Tv_AscribedC _ _ _ -> "Tv_AscribedC"
@@ -807,8 +807,6 @@ let pm #b #a (abspat: a) : Tac b =
 /// ========
 ///
 /// We conclude with a small set of examples.
-
-open FStar.Tactics
 
 /// Simple examples
 /// ---------------

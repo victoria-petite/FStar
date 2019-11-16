@@ -30,6 +30,7 @@ val get_guard_policy : unit -> tac<guard_policy>
 val set_guard_policy : guard_policy -> tac<unit>
 val lax_on : unit -> tac<bool>
 
+val curms      : unit -> tac<Z.t>
 val fresh      : unit -> tac<Z.t>
 
 val join    : unit -> tac<unit>
@@ -44,8 +45,8 @@ val tacprint1 : string -> string -> unit
 val tacprint2 : string -> string -> string -> unit
 val tacprint3 : string -> string -> string -> string -> unit
 val print     : string -> tac<unit>
-val dump_proofstate : proofstate -> string -> unit
-val print_proof_state  : string -> tac<unit>
+val do_dump_proofstate : proofstate -> string -> unit
+val dump : string -> tac<unit>
 val debugging : unit -> tac<bool>
 
 val trivial : unit -> tac<unit>
@@ -60,7 +61,7 @@ val norm : list<EMB.norm_step> -> tac<unit>
 val norm_term_env : env -> list<EMB.norm_step> -> term -> tac<term>
 val refine_intro : unit -> tac<unit>
 val t_exact : bool -> bool -> term -> tac<unit>
-val t_apply : bool -> term -> tac<unit>
+val t_apply : bool -> bool -> term -> tac<unit>
 val apply_lemma : term -> tac<unit>
 val rewrite : binder -> tac<unit>
 val rename_to : binder -> string -> tac<unit>
@@ -69,7 +70,8 @@ val norm_binder_type : list<EMB.norm_step> -> binder -> tac<unit>
 val revert : unit -> tac<unit>
 val clear : binder -> tac<unit>
 val clear_top : unit -> tac<unit>
-val tc : term -> tac<typ>
+val tc  : env -> term -> tac<typ>
+val tcc : env -> term -> tac<comp>
 
 val is_irrelevant : goal -> bool
 
@@ -87,7 +89,6 @@ val trefl : unit -> tac<unit>
 val dup      : unit -> tac<unit>
 val tadmit_t : term -> tac<unit>
 
-val cases : term -> tac<(term * term)>
 val t_destruct : term -> tac<list<(fv * Z.t)>>
 
 val top_env : unit -> tac<env>
@@ -103,5 +104,6 @@ val lget : typ -> string -> tac<term>
 val lset : typ -> string -> term -> tac<unit>
 
 val goal_of_goal_ty : env -> typ -> goal * guard_t
+val proofstate_of_goals : Range.range -> env -> list<goal> -> list<implicit> -> proofstate
 (* Returns proofstate and uvar for main witness *)
 val proofstate_of_goal_ty : Range.range -> env -> typ -> proofstate * term

@@ -17,7 +17,6 @@
 module FStar.Util
 open FStar.ST
 open FStar.All
-(* open System.IO *)
 
 open FStar.BaseTypes
 
@@ -31,6 +30,7 @@ val return_all: 'a -> ML<'a>
 type time
   = System.DateTime // JUST FSHARP
 val now : unit -> time
+val now_ms : unit -> int
 val time_diff: time -> time -> float*int
 val record_time: (unit -> 'a) -> ('a * int)
 val is_before: time -> time -> bool
@@ -87,6 +87,7 @@ val smap_remove: smap<'value> -> string -> unit
 val smap_keys: smap<'value> -> list<string>
 val smap_copy: smap<'value> -> smap<'value>
 val smap_size: smap<'value> -> int
+val smap_iter: smap<'value> -> (string -> 'value -> unit) -> unit
 
 (* pure version *)
 type psmap<'value>
@@ -98,6 +99,7 @@ val psmap_try_find: psmap<'value> -> string -> option<'value>
 val psmap_fold: psmap<'value> -> (string -> 'value -> 'a -> 'a) -> 'a -> 'a
 val psmap_find_map: psmap<'value> -> (string -> 'value -> option<'a>) -> option<'a>
 val psmap_modify: psmap<'value> -> string -> (option<'value> -> 'value) -> psmap<'value>
+val psmap_merge: psmap<'value> -> psmap<'value> -> psmap<'value>
 
 (* not relying on representation *)
 type imap<'value>
@@ -208,6 +210,7 @@ type stream_reader
   = System.IO.StreamReader// JUST FSHARP
 val open_stdin : unit -> stream_reader
 val read_line: stream_reader -> option<string>
+val nread : stream_reader -> int -> option<string>
 
 (* not relying on representation *)
 type string_builder
@@ -319,6 +322,7 @@ val take: ('a -> bool) -> list<'a> -> list<'a> * list<'a>
 (* on top of the leftover input list *)
 val fold_flatten:('a -> 'b -> 'a * list<'b>) -> 'a -> list<'b> -> 'a
 
+val is_none: option<'a> -> Tot<bool>
 val is_some: option<'a> -> Tot<bool>
 val must: option<'a> -> 'a
 val dflt: 'a -> option<'a> -> Tot<'a>
@@ -414,6 +418,8 @@ val map_option: ('a -> 'b) -> option<'a> -> option<'b>
 
 val save_value_to_file: string -> 'a -> unit
 val load_value_from_file: string -> option<'a>
+val save_2values_to_file: string -> 'a -> 'b -> unit
+val load_2values_from_file: string -> option<('a * 'b)>
 val print_exn: exn -> string
 val digest_of_file: string -> string
 val digest_of_string: string -> string

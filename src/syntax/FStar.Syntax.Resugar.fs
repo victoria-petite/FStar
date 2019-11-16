@@ -160,16 +160,23 @@ let string_to_op s =
   | "op_Lens_Access" -> Some (".(||)", None)
   | _ ->
     if BU.starts_with s "op_" then
-      let s = BU.split (BU.substring_from s (String.length "op_"))  "_" in
+    begin
+      let s = BU.split (BU.substring_from s (String.length "op_")) "_" in
       match s with
       | [op] -> name_of_op op
       | _ ->
-        let op = List.fold_left(fun acc x -> match x with
-                                  | Some (op, _) -> acc ^ op
-                                  | None -> failwith "wrong composed operator format")
-                                  "" (List.map name_of_op s)  in
-        Some (op, None)
-    else
+        let maybeop =
+          List.fold_left (fun acc x -> match acc with
+                                       | None -> None
+                                       | Some acc ->
+                                           match x with
+                                           | Some (op, _) -> Some (acc ^ op)
+                                           | None -> None)
+                         (Some "")
+                         (List.map name_of_op s)
+        in
+        BU.map_opt maybeop (fun o -> (o, None))
+    end else
       None
 
 type expected_arity = option<int>
@@ -506,8 +513,8 @@ let rec resugar_term' (env: DsEnv.env) (t : S.term) : A.term =
         | Some (op, _) when op = "forall" || op = "exists" ->
           (* desugared from QForall(binders * patterns * body) to Tm_app(forall, Tm_abs(binders, Tm_meta(body, meta_pattern(list<args>)*)
           let rec uncurry xs pat (t:A.term) = match t.tm with
-            | A.QExists(x, p , body)
-            | A.QForall(x, p, body)
+            | A.QExists(x, (_, p) , body)
+            | A.QForall(x, (_, p), body)
               -> uncurry (x@xs) (p@pat) body
             | _ -> xs, pat, t
           in
@@ -520,7 +527,9 @@ let rec resugar_term' (env: DsEnv.env) (t : S.term) : A.term =
                   | Tm_meta(e, m) ->
                     let body = resugar_term' env e in
                     let pats, body = match m with
-                      | Meta_pattern pats -> List.map (fun es -> es |> List.map (fun (e, _) -> resugar_term' env e)) pats, body
+                      | Meta_pattern (_, pats) ->
+                        List.map (fun es -> es |> List.map (fun (e, _) -> resugar_term' env e)) pats,
+                        body
                       | Meta_labeled (s, r, p) ->
                         // this case can occur in typechecker when a failure is wrapped in meta_labeled
                         [], mk (A.Labeled (body, s, p))
@@ -531,13 +540,15 @@ let rec resugar_term' (env: DsEnv.env) (t : S.term) : A.term =
                 in
                 let xs, pats, body = uncurry xs pats body in
                 let xs = xs |> List.rev in
-                if op = "forall" then mk (A.QForall(xs, pats, body)) else mk (A.QExists(xs, pats, body))
+                if op = "forall"
+                then mk (A.QForall(xs, (A.idents_of_binders xs t.pos, pats), body))
+                else mk (A.QExists(xs, (A.idents_of_binders xs t.pos, pats), body))
 
             | _ ->
             (*forall added by typechecker.normalize doesn't not have Tm_abs as body*)
             (*TODO:  should we resugar them back as forall/exists or just as the term of the body *)
-            if op = "forall" then mk (A.QForall([], [[]], resugar_term' env body))
-            else mk (A.QExists([], [[]], resugar_term' env body))
+            if op = "forall" then mk (A.QForall([], ([], []), resugar_term' env body))
+            else mk (A.QExists([], ([], []), resugar_term' env body))
           in
           (* only the last arg is from original AST terms, others are added by typechecker *)
           (* TODO: we need a place to store the information in the args added by the typechecker *)
@@ -696,7 +707,7 @@ let rec resugar_term' (env: DsEnv.env) (t : S.term) : A.term =
               resugar_term' env e
       in
       begin match m with
-      | Meta_pattern pats ->
+      | Meta_pattern (_, pats) ->
         // This case is possible in TypeChecker when creating "haseq" for Sig_inductive_typ whose Sig_datacon has no binders.
         let pats = List.flatten pats |> List.map (fun (x, _) -> resugar_term' env x) in
         // Is it correct to resugar it to Attributes.
@@ -964,6 +975,7 @@ let resugar_pragma = function
   | S.ResetOptions s -> A.ResetOptions s
   | S.PushOptions s -> A.PushOptions s
   | S.PopOptions -> A.PopOptions
+  | S.RestartSolver -> A.RestartSolver
   | S.LightOff -> A.LightOff
 
 let resugar_typ env datacon_ses se : sigelts * A.tycon =
@@ -1030,7 +1042,43 @@ let resugar_tscheme'' env name (ts:S.tscheme) =
 let resugar_tscheme' env (ts:S.tscheme) =
   resugar_tscheme'' env "tscheme" ts
 
-let resugar_eff_decl' env for_free r q ed =
+let resugar_wp_eff_combinators env for_free combs =
+  let resugar_opt name tsopt =
+    match tsopt with
+    | Some ts -> [resugar_tscheme'' env name ts]
+    | None -> [] in
+
+  let repr = resugar_opt "repr" combs.repr in
+  let return_repr = resugar_opt "return_repr" combs.return_repr in
+  let bind_repr = resugar_opt "bind_repr" combs.bind_repr in
+
+  if for_free then repr@return_repr@bind_repr
+  else
+    (resugar_tscheme'' env "ret_wp" combs.ret_wp)::
+    (resugar_tscheme'' env "bind_wp" combs.bind_wp)::
+    (resugar_tscheme'' env "stronger" combs.stronger)::
+    (resugar_tscheme'' env "if_then_else" combs.if_then_else)::
+    (resugar_tscheme'' env "ite_wp" combs.ite_wp)::
+    (resugar_tscheme'' env "close_wp" combs.close_wp)::
+    (resugar_tscheme'' env "trivial" combs.trivial)::
+    (repr@return_repr@bind_repr)
+
+let resugar_layered_eff_combinators env combs =
+  let resugar name (ts, _) = resugar_tscheme'' env name ts in
+
+  (resugar "repr" combs.l_repr)::
+  (resugar "return" combs.l_return)::
+  (resugar "bind" combs.l_bind)::
+  (resugar "subcomp" combs.l_subcomp)::
+  (resugar "if_then_else" combs.l_if_then_else)::[]
+
+let resugar_combinators env combs =
+  match combs with
+  | Primitive_eff combs -> resugar_wp_eff_combinators env false combs
+  | DM4F_eff combs -> resugar_wp_eff_combinators env true combs
+  | Layered_eff combs -> resugar_layered_eff_combinators env combs
+
+let resugar_eff_decl' env r q ed =
   let resugar_action d for_free =
     let action_params = SS.open_binders d.action_params in
     let bs, action_defn = SS.open_term action_params d.action_defn in
@@ -1047,30 +1095,13 @@ let resugar_eff_decl' env for_free r q ed =
       mk_decl r q (A.Tycon(false, false, [(A.TyconAbbrev(d.action_name.ident, action_params, None, action_defn), None)]))
   in
   let eff_name = ed.mname.ident in
-  let eff_binders, eff_typ = SS.open_term ed.binders ed.signature in
+  let eff_binders, eff_typ = SS.open_term ed.binders (ed.signature |> snd) in
   let eff_binders = if (Options.print_implicits()) then eff_binders else filter_imp eff_binders in
   let eff_binders = eff_binders |> map_opt (fun b -> resugar_binder' env b r) |> List.rev in
   let eff_typ = resugar_term' env eff_typ in
-  let ret_wp = resugar_tscheme'' env "ret_wp" ed.ret_wp in
-  let bind_wp = resugar_tscheme'' env "bind_wp" ed.bind_wp in
-  let if_then_else = resugar_tscheme'' env "if_then_else" ed.if_then_else in
-  let ite_wp = resugar_tscheme'' env "ite_wp" ed.ite_wp in
-  let stronger = resugar_tscheme'' env "stronger" ed.stronger in
-  let close_wp = resugar_tscheme'' env "close_wp" ed.close_wp in
-  let assert_p = resugar_tscheme'' env "assert_p" ed.assert_p in
-  let assume_p = resugar_tscheme'' env "assume_p" ed.assume_p in
-  let null_wp = resugar_tscheme'' env "null_wp" ed.null_wp in
-  let trivial = resugar_tscheme'' env "trivial" ed.trivial in
-  let repr = resugar_tscheme'' env "repr" ([], ed.repr) in
-  let return_repr = resugar_tscheme'' env "return_repr" ed.return_repr in
-  let bind_repr = resugar_tscheme'' env "bind_repr" ed.bind_repr in
-  let mandatory_members_decls =
-    if for_free then
-      [repr; return_repr; bind_repr]
-    else
-      [repr; return_repr; bind_repr; ret_wp; bind_wp;
-       if_then_else; ite_wp; stronger; close_wp; assert_p;
-        assume_p; null_wp; trivial] in
+
+  let mandatory_members_decls = resugar_combinators env ed.combinators in
+
   let actions = ed.actions |> List.map (fun a -> resugar_action a false) in
   let decls = mandatory_members_decls@actions in
   mk_decl r q (A.NewEffect(DefineEffect(eff_name, eff_binders, eff_typ, decls)))
@@ -1124,10 +1155,7 @@ let resugar_sigelt' env se : option<A.decl> =
     Some (decl'_to_decl se (Assume (lid.ident, resugar_term' env fml)))
 
   | Sig_new_effect ed ->
-    Some (resugar_eff_decl' env false se.sigrng se.sigquals ed)
-
-  | Sig_new_effect_for_free ed ->
-    Some (resugar_eff_decl' env true se.sigrng se.sigquals ed)
+    Some (resugar_eff_decl' env se.sigrng se.sigquals ed)
 
   | Sig_sub_effect e ->
     let src = e.source in
@@ -1205,5 +1233,5 @@ let resugar_binder (b:S.binder) r : option<A.binder> =
 let resugar_tscheme (ts:S.tscheme) =
   noenv resugar_tscheme' ts
 
-let resugar_eff_decl for_free r q ed =
-  noenv resugar_eff_decl' for_free r q ed
+let resugar_eff_decl r q ed =
+  noenv resugar_eff_decl' r q ed

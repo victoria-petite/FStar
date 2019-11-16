@@ -24,10 +24,17 @@ open FStar.Tactics.Result
 open FStar.Tactics.Util
 module L = FStar.List.Tot
 
+(* Another hook to just run a tactic without goals, just by reusing `with_tactic` *)
+let run_tactic (t:unit -> Tac unit)
+  : Pure unit
+         (requires (set_range_of (with_tactic (fun () -> trivial (); t ()) (squash True)) (range_of t)))
+         (ensures (fun _ -> True))
+  = ()
+
 let goals () : Tac (list goal) = goals_of (get ())
 let smt_goals () : Tac (list goal) = smt_goals_of (get ())
 
-let fail (m:string) = raise (TacticFailure m)
+let fail (#a:Type) (m:string) = raise #a (TacticFailure m)
 
 (** Return the current *goal*, not its type. (Ignores SMT goals) *)
 let _cur_goal () : Tac goal =
@@ -44,13 +51,17 @@ let cur_goal () : Tac typ = goal_type (_cur_goal ())
 (** [cur_witness] returns the current goal's witness *)
 let cur_witness () : Tac term = goal_witness (_cur_goal ())
 
-(* [cur_goal_safe] will always return the current goal, without failing.
+(** [cur_goal_safe] will always return the current goal, without failing.
 It must be statically verified that there indeed is a goal in order to
 call it. *)
 let cur_goal_safe () : TacH goal (requires (fun ps -> ~(goals_of ps == [])))
                                  (ensures (fun ps0 r -> exists g. r == Success g ps0))
  = match goals_of (get ()) with
    | g :: _ -> g
+
+(** [cur_binders] returns the list of binders in the current goal. *)
+let cur_binders () : Tac binders =
+    binders_of_env (cur_env ())
 
 (** Set the guard policy only locally, without affecting calling code *)
 let with_policy pol (f : unit -> Tac 'a) : Tac 'a =
@@ -108,23 +119,31 @@ let later () : Tac unit =
     | _ -> fail "later: no goals"
 
 (** [exact e] will solve a goal [Gamma |- w : t] if [e] has type exactly
-[t] in [Gamma]. Also, [e] needs to unift with [w], but this will almost
-always be the case since [w] is usually a uvar. *)
+[t] in [Gamma]. *)
 let exact (t : term) : Tac unit =
     with_policy SMT (fun () -> t_exact true false t)
+
+(** [exact_with_ref e] will solve a goal [Gamma |- w : t] if [e] has
+type [t'] where [t'] is a subtype of [t] in [Gamma]. This is a more
+flexible variant of [exact]. *)
+let exact_with_ref (t : term) : Tac unit =
+    with_policy SMT (fun () -> t_exact true true t)
 
 (** [apply f] will attempt to produce a solution to the goal by an application
 of [f] to any amount of arguments (which need to be solved as further goals).
 The amount of arguments introduced is the least such that [f a_i] unifies
 with the goal's type. *)
 let apply (t : term) : Tac unit =
-    t_apply true t
+    t_apply true false t
+
+let apply_noinst (t : term) : Tac unit =
+    t_apply true true t
 
 (** [apply_raw f] is like [apply], but will ask for all arguments
 regardless of whether they appear free in further goals. See the
 explanation in [t_apply]. *)
 let apply_raw (t : term) : Tac unit =
-    t_apply false t
+    t_apply false false t
 
 (** Like [exact], but allows for the term [e] to have a type [t] only
 under some guard [g], adding the guard as a goal. *)
@@ -134,8 +153,11 @@ let exact_guard (t : term) : Tac unit =
 let pointwise  (tau : unit -> Tac unit) : Tac unit = t_pointwise BottomUp tau
 let pointwise' (tau : unit -> Tac unit) : Tac unit = t_pointwise TopDown  tau
 
-let cur_module () : Tac (list string) =
-    moduleof (cur_env ())
+let cur_module () : Tac name =
+    moduleof (top_env ())
+
+let open_modules () : Tac (list name) =
+    env_open_modules (top_env ())
 
 let rec repeatn (#a:Type) (n : int) (t : unit -> Tac a) : Tac (list a) =
     if n = 0
@@ -247,17 +269,15 @@ let fresh_binder t : Tac binder =
     let i = fresh () in
     fresh_binder_named ("x" ^ string_of_int i) t
 
-let norm_term (s : list norm_step) (t : term) : Tac term =
-    let e = cur_env () in
-    norm_term_env e s t
-
 let guard (b : bool) : TacH unit (requires (fun _ -> True))
                                  (ensures (fun ps r -> if b
                                                        then Success? r /\ Success?.ps r == ps
-                                                       else Failed? r  /\ Failed?.ps r == ps))
+                                                       else Failed? r))
+        (* ^ the proofstate on failure is not exactly equal (has the psc set) *)
     =
     if not b then
         fail "guard failed"
+    else ()
 
 let try_with (f : unit -> Tac 'a) (h : exn -> Tac 'a) : Tac 'a =
     match catch f with
@@ -291,6 +311,13 @@ let repeat1 (#a:Type) (t : unit -> Tac a) : Tac (list a) =
 
 let repeat' (f : unit -> Tac 'a) : Tac unit =
     let _ = repeat f in ()
+
+let norm_term (s : list norm_step) (t : term) : Tac term =
+    let e =
+        try cur_env ()
+        with | _ -> top_env ()
+    in
+    norm_term_env e s t
 
 (** Join all of the SMT goals into one. This helps when all of them are
 expected to be similar, and therefore easier to prove at once by the SMT
@@ -335,7 +362,7 @@ let guards_to_smt () : Tac unit =
     ()
 
 let simpl   () : Tac unit = norm [simplify; primops]
-let whnf    () : Tac unit = norm [weak; hnf; primops]
+let whnf    () : Tac unit = norm [weak; hnf; primops; delta]
 let compute () : Tac unit = norm [primops; iota; delta; zeta]
 
 let intros () : Tac (list binder) = repeat intro
@@ -357,7 +384,6 @@ let pose (t:term) : Tac binder =
     apply (`__cut);
     flip ();
     exact t;
-    let _ = trytac flip in // maybe we have less than 2 goals now
     intro ()
 
 let intro_as (s:string) : Tac binder =
@@ -371,13 +397,17 @@ let pose_as (s:string) (t:term) : Tac binder =
     b
 
 let for_each_binder (f : binder -> Tac 'a) : Tac (list 'a) =
-    map f (binders_of_env (cur_env ()))
+    map f (cur_binders ())
 
 let rec revert_all (bs:binders) : Tac unit =
     match bs with
     | [] -> ()
     | _::tl -> revert ();
                revert_all tl
+
+(* Some syntax utility functions *)
+let bv_to_term (bv : bv) : Tac term = pack (Tv_Var bv)
+let binder_to_term (b : binder) : Tac term = let bv, _ = inspect_binder b in bv_to_term bv
 
 // Cannot define this inside `assumption` due to #1091
 private
@@ -386,11 +416,14 @@ let rec __assumption_aux (bs : binders) : Tac unit =
     | [] ->
         fail "no assumption matches goal"
     | b::bs ->
-        let t = pack_ln (Tv_Var (bv_of_binder b)) in
-        or_else (fun () -> exact t) (fun () -> __assumption_aux bs)
+        let t = binder_to_term b in
+        try exact t with | _ ->
+        try (apply (`FStar.Squash.return_squash);
+             exact t) with | _ ->
+        __assumption_aux bs
 
 let assumption () : Tac unit =
-    __assumption_aux (binders_of_env (cur_env ()))
+    __assumption_aux (cur_binders ())
 
 let destruct_equality_implication (t:term) : Tac (option (formula * term)) =
     match term_as_formula t with
@@ -432,21 +465,15 @@ let rec rewrite_all_context_equalities (bs:binders) : Tac unit =
     match bs with
     | [] -> ()
     | x_t::bs -> begin
-        begin match term_as_formula_total (type_of_binder x_t) with
-        | Comp (Eq _) lhs _ ->
-            begin match inspect_ln lhs with
-            | Tv_Var _ -> rewrite x_t
-            | _ -> ()
-            end
-        | _ -> () end;
+        (try rewrite x_t with | _ -> ());
         rewrite_all_context_equalities bs
     end
 
 let rewrite_eqs_from_context () : Tac unit =
-    rewrite_all_context_equalities (binders_of_env (cur_env ()))
+    rewrite_all_context_equalities (cur_binders ())
 
 let rewrite_equality (t:term) : Tac unit =
-    try_rewrite_equality t (binders_of_env (cur_env ()))
+    try_rewrite_equality t (cur_binders ())
 
 let unfold_def (t:term) : Tac unit =
     match inspect t with
@@ -455,17 +482,8 @@ let unfold_def (t:term) : Tac unit =
         norm [delta_fully [n]]
     | _ -> fail "unfold_def: term is not a fv"
 
-let grewrite' (t1 t2 eq : term) : Tac unit =
-    let g = cur_goal () in
-    match term_as_formula g with
-    | Comp (Eq _) l _ ->
-        if term_eq l t1
-        then exact eq
-        else trefl ()
-    | _ ->
-        fail "impossible"
-
-(** Rewrites left-to-right, and bottom-up, given a set of lemmas stating equalities *)
+(** Rewrites left-to-right, and bottom-up, given a set of lemmas stating equalities.
+The lemmas need to prove *propositional* equalities, that is, using [==]. *)
 let l_to_r (lems:list term) : Tac unit =
     let first_or_trefl () : Tac unit =
         fold_left (fun k l () ->
@@ -484,21 +502,13 @@ let mk_sq_eq (t1 t2 : term) : term =
 
 let grewrite (t1 t2 : term) : Tac unit =
     let e = tcut (mk_sq_eq t1 t2) in
-    pointwise (fun () -> grewrite' t1 t2 (pack_ln (Tv_Var (bv_of_binder e))))
+    let e = pack_ln (Tv_Var (bv_of_binder e)) in
+    pointwise (fun () -> try exact e with | _ -> trefl ())
 
 let rec iseq (ts : list (unit -> Tac unit)) : Tac unit =
     match ts with
     | t::ts -> let _ = divide 1 t (fun () -> iseq ts) in ()
     | []    -> ()
-
-private val __witness : (#a:Type) -> (x:a) -> (#p:(a -> Type)) -> squash (p x) -> squash (l_Exists p)
-private let __witness #a x #p _ =
-  let x : squash (exists x. p x) = () in
-  x
-
-let witness (t : term) : Tac unit =
-    apply_raw (`__witness);
-    exact t
 
 private val push1 : (#p:Type) -> (#q:Type) ->
                         squash (p ==> q) ->
@@ -506,43 +516,73 @@ private val push1 : (#p:Type) -> (#q:Type) ->
                         squash q
 private let push1 #p #q f u = ()
 
+private val push1' : (#p:Type) -> (#q:Type) ->
+                         (p ==> q) ->
+                         squash p ->
+                         squash q
+private let push1' #p #q f u = ()
+
 (*
  * Some easier applying, which should prevent frustation
  * (or cause more when it doesn't do what you wanted to)
  *)
 val apply_squash_or_lem : d:nat -> term -> Tac unit
 let rec apply_squash_or_lem d t =
+    (* Before anything, try a vanilla apply and apply_lemma *)
+    try apply t with | _ ->
+    try apply (`FStar.Squash.return_squash); apply t with | _ ->
+    try apply_lemma t with | _ ->
+
     // Fuel cutoff, just in case.
     if d <= 0 then fail "mapply: out of fuel" else begin
-    let g = cur_goal () in
-    let ty = tc t in
+
+    let ty = tc (cur_env ()) t in
     let tys, c = collect_arr ty in
     match inspect_comp c with
     | C_Lemma pre post ->
        begin
-       (* What I would really like to do here is unify `mk_squash post` and the goal,
-        * but it didn't work on a first try, so just doing this for now *)
-       match trytac (fun () -> apply_lemma t) with
-       | Some _ -> () // Success
-       | None ->
-           let post = norm_term [] post in
-           (* Is the lemma an implication? We can try to intro *)
-           match term_as_formula' post with
-           | Implies p q ->
-               apply_lemma (`push1);
-               apply_squash_or_lem (d-1) t
+       let post = norm_term [] post in
+       (* Is the lemma an implication? We can try to intro *)
+       match term_as_formula' post with
+       | Implies p q ->
+           apply_lemma (`push1);
+           apply_squash_or_lem (d-1) t
 
-           | _ ->
-               fail "mapply: can't apply (1)"
+       | _ ->
+           fail "mapply: can't apply (1)"
        end
     | C_Total rt _ ->
        begin match unsquash rt with
        (* If the function returns a squash, just apply it, since our goals are squashed *)
-       | Some _ -> apply_lemma t
+       | Some rt ->
+        // DUPLICATED, refactor!
+         begin
+         let rt = norm_term [] rt in
+         (* Is the lemma an implication? We can try to intro *)
+         match term_as_formula' rt with
+         | Implies p q ->
+             apply_lemma (`push1);
+             apply_squash_or_lem (d-1) t
+
+         | _ ->
+             fail "mapply: can't apply (1)"
+         end
+
        (* If not, we can try to introduce the squash ourselves first *)
        | None ->
-           apply (`FStar.Squash.return_squash);
-           apply t
+        // DUPLICATED, refactor!
+         begin
+         let rt = norm_term [] rt in
+         (* Is the lemma an implication? We can try to intro *)
+         match term_as_formula' rt with
+         | Implies p q ->
+             apply_lemma (`push1);
+             apply_squash_or_lem (d-1) t
+
+         | _ ->
+             apply (`FStar.Squash.return_squash);
+             apply t
+         end
        end
     | _ -> fail "mapply: can't apply (2)"
     end
@@ -587,10 +627,6 @@ let add_elem (t : unit -> Tac 'a) : Tac 'a = focus (fun () ->
     )
   )
 
-(* Some syntax utility functions *)
-let bv_to_term (bv : bv) : Tac term = pack (Tv_Var bv)
-let binder_to_term (b : binder) : Tac term = let bv, _ = inspect_binder b in bv_to_term bv
-
 (*
  * Specialize a function by partially evaluating it
  * For example:
@@ -625,3 +661,65 @@ let tlabel' (l:string) =
 let focus_all () : Tac unit =
     set_goals (goals () @ smt_goals ());
     set_smt_goals []
+
+private
+let rec extract_nth (n:nat) (l : list 'a) : option ('a * list 'a) =
+  match n, l with
+  | _, [] -> None
+  | 0, hd::tl -> Some (hd, tl)
+  | _, hd::tl -> begin
+    match extract_nth (n-1) tl with
+    | Some (hd', tl') -> Some (hd', hd::tl')
+    | None -> None
+  end
+
+let bump_nth (n:pos) : Tac unit =
+  // n-1 since goal numbering begins at 1
+  match extract_nth (n - 1) (goals ()) with
+  | None -> fail "bump_nth: not that many goals"
+  | Some (h, t) -> set_goals (h :: t)
+
+
+let rec visit_tm (ff : term -> Tac term) (t : term) : Tac term =
+  let tv = inspect t in
+  let tv' =
+    match tv with
+    | Tv_Var _
+    | Tv_BVar _
+    | Tv_FVar _ -> tv
+    | Tv_FVar fv -> Tv_FVar fv
+    | Tv_Type () -> Tv_Type ()
+    | Tv_Const c -> Tv_Const c
+    | Tv_Uvar i u -> Tv_Uvar i u
+    | Tv_Unknown -> Tv_Unknown
+    | Tv_App l (r, q) ->
+         let l = visit_tm ff l in
+         let r = visit_tm ff r in
+         Tv_App l (r, q)
+    | Tv_Abs b t ->
+        let t = visit_tm ff t in
+        Tv_Abs b t
+    | Tv_Refine b r ->
+        let r = visit_tm ff r in
+        Tv_Refine b r
+    | Tv_Let r attrs b def t ->
+        let def = visit_tm ff def in
+        let t = visit_tm ff t in
+        Tv_Let r attrs b def t
+    | Tv_Match sc brs ->
+        let sc = visit_tm ff sc in
+        let brs = map (visit_br ff) brs in
+        Tv_Match sc brs
+    | Tv_AscribedT e t topt ->
+        let e = visit_tm ff e in
+        let t = visit_tm ff t in
+        Tv_AscribedT e t topt
+    | Tv_AscribedC e c topt ->
+        let e = visit_tm ff e in
+        Tv_AscribedC e c topt
+    | _ -> fail "impos"
+  in
+  ff (pack tv')
+and visit_br (ff : term -> Tac term) (b:branch) : Tac branch =
+  (* TODO *)
+  b

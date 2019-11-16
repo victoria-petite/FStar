@@ -228,20 +228,6 @@ let comp_to_comp_typ_nouniv (c:comp) : comp_typ =
 let comp_set_flags (c:comp) f =
     {c with n=Comp ({comp_to_comp_typ_nouniv c with flags=f})}
 
-let lcomp_set_flags (lc:lcomp) (fs:list<cflag>) =
-    let comp_typ_set_flags (c:comp) =
-        match c.n with
-        | Total _
-        | GTotal _ -> c
-        | Comp ct ->
-          let ct = {ct with flags=fs} in
-          {c with n=Comp ct}
-    in
-    Syntax.mk_lcomp lc.eff_name
-                    lc.res_typ
-                    fs
-                    (fun () -> comp_typ_set_flags (lcomp_comp lc))
-
 let comp_to_comp_typ (c:comp) : comp_typ =
     match c.n with
     | Comp c -> c
@@ -254,6 +240,16 @@ let comp_to_comp_typ (c:comp) : comp_typ =
        flags=comp_flags c}
     | _ -> failwith "Assertion failed: Computation type without universe"
 
+let destruct_comp c : (universe * typ * typ) =
+  let wp = match c.effect_args with
+    | [(wp, _)] -> wp
+    | _ ->
+      failwith (U.format2
+        "Impossible: Got a computation %s with %s effect args"
+        c.effect_name.str
+        (c.effect_args |> List.length |> string_of_int)) in
+  List.hd c.comp_univs, c.result_typ, wp
+
 let is_named_tot c =
     match c.n with
         | Comp c -> lid_equals c.effect_name PC.effect_Tot_lid
@@ -264,15 +260,7 @@ let is_total_comp c =
     lid_equals (comp_effect_name c) PC.effect_Tot_lid
     || comp_flags c |> U.for_some (function TOTAL | RETURN -> true | _ -> false)
 
-let is_total_lcomp c = lid_equals c.eff_name PC.effect_Tot_lid || c.cflags |> U.for_some (function TOTAL | RETURN -> true | _ -> false)
-
-let is_tot_or_gtot_lcomp c = lid_equals c.eff_name PC.effect_Tot_lid
-                             || lid_equals c.eff_name PC.effect_GTot_lid
-                             || c.cflags |> U.for_some (function TOTAL | RETURN -> true | _ -> false)
-
 let is_partial_return c = comp_flags c |> U.for_some (function RETURN | PARTIAL_RETURN -> true | _ -> false)
-
-let is_lcomp_partial_return c = c.cflags |> U.for_some (function RETURN | PARTIAL_RETURN -> true | _ -> false)
 
 let is_tot_or_gtot_comp c =
     is_total_comp c
@@ -303,14 +291,6 @@ let is_div_effect l =
 let is_pure_or_ghost_comp c = is_pure_comp c || is_ghost_effect (comp_effect_name c)
 
 let is_pure_or_ghost_effect l = is_pure_effect l || is_ghost_effect l
-
-let is_pure_lcomp lc =
-    is_total_lcomp lc
-    || is_pure_effect lc.eff_name
-    || lc.cflags |> U.for_some (function LEMMA -> true | _ -> false)
-
-let is_pure_or_ghost_lcomp lc =
-    is_pure_lcomp lc || is_ghost_effect lc.eff_name
 
 let is_pure_or_ghost_function t = match (compress t).n with
     | Tm_arrow(_, c) -> is_pure_or_ghost_comp c
@@ -370,9 +350,6 @@ let set_result_typ c t = match c.n with
   | Total _ -> mk_Total t
   | GTotal _ -> mk_GTotal t
   | Comp ct -> mk_Comp({ct with result_typ=t})
-
-let set_result_typ_lc (lc:lcomp) (t:typ) :lcomp =
-  Syntax.mk_lcomp lc.eff_name t lc.cflags (fun _ -> set_result_typ (lcomp_comp lc) t)
 
 let is_trivial_wp c =
   comp_flags c |> U.for_some (function TOTAL | RETURN -> true | _ -> false)
@@ -439,6 +416,7 @@ let eq_lazy_kind k k' =
      | BadLazy, BadLazy
      | Lazy_bv, Lazy_bv
      | Lazy_binder, Lazy_binder
+     | Lazy_optionstate, Lazy_optionstate
      | Lazy_fvar, Lazy_fvar
      | Lazy_comp, Lazy_comp
      | Lazy_env, Lazy_env
@@ -749,7 +727,6 @@ let lids_of_sigelt (se: sigelt) = match se.sigel with
   | Sig_datacon (lid, _, _, _, _, _)
   | Sig_declare_typ (lid, _, _)
   | Sig_assume (lid, _, _) -> [lid]
-  | Sig_new_effect_for_free(n)
   | Sig_new_effect(n) -> [n.mname]
   | Sig_sub_effect _
   | Sig_pragma _
@@ -847,11 +824,6 @@ let ses_of_sigbundle (se:sigelt) :list<sigelt> =
   match se.sigel with
   | Sig_bundle (ses, _) -> ses
   | _                   -> failwith "ses_of_sigbundle: not a Sig_bundle"
-
-let eff_decl_of_new_effect (se:sigelt) :eff_decl =
-  match se.sigel with
-  | Sig_new_effect ne -> ne
-  | _                 -> failwith "eff_decl_of_new_effect: not a Sig_new_effect"
 
 let set_uvar uv t =
   match Unionfind.find uv with
@@ -1159,6 +1131,11 @@ let mk_disj_l phi = match phi with
 let mk_imp phi1 phi2 : term = mk_binop timp phi1 phi2
 let mk_iff phi1 phi2 : term = mk_binop tiff phi1 phi2
 let b2t e = mk (Tm_app(b2t_v, [as_arg e])) None e.pos//implicitly coerce a boolean to a type
+let unb2t (e:term) : option<term> =
+    let hd, args = head_and_args e in
+    match (compress hd).n, args with
+    | Tm_fvar fv, [(e, _)] when fv_eq_lid fv PC.b2t_lid -> Some e
+    | _ -> None
 
 let is_t_true t =
      match (unmeta t).n with
@@ -1195,14 +1172,6 @@ let lex_pair = fvar PC.lexcons_lid delta_constant (Some Data_ctor) //NS delta: o
 let tforall  = fvar PC.forall_lid (Delta_constant_at_level 1) None //NS delta: wrong level 2
 let t_haseq   = fvar PC.haseq_lid delta_constant None //NS delta: wrong Delta_abstract (Delta_constant_at_level 0)?
 
-let lcomp_of_comp c0 =
-    let eff_name, flags =
-        match c0.n with
-        | Total _ -> PC.effect_Tot_lid, [TOTAL]
-        | GTotal _ -> PC.effect_GTot_lid, [SOMETRIVIAL]
-        | Comp c -> c.effect_name, c.flags in
-    Syntax.mk_lcomp eff_name (comp_result c0) flags (fun () -> c0)
-
 let mk_residual_comp l t f = {
     residual_effect=l;
     residual_typ=t;
@@ -1218,12 +1187,6 @@ let residual_comp_of_comp (c:comp) = {
     residual_typ=Some (comp_result c);
     residual_flags=comp_flags c;
   }
-let residual_comp_of_lcomp (lc:lcomp) = {
-    residual_effect=lc.eff_name;
-    residual_typ=Some (lc.res_typ);
-    residual_flags=lc.cflags
-  }
-
 
 let mk_forall_aux fa x body =
   mk (Tm_app(fa, [ iarg (x.sort);
@@ -1357,6 +1320,29 @@ type connective =
     | QEx of binders * qpats * typ
     | BaseConn of lident * args
 
+(* destruct_typ_as_formula can be hot; these tables are defined
+   here to ensure they are constructed only once in the executing
+   binary
+
+   the tables encode arity -> match_lid -> output_lid
+   *)
+let destruct_base_table =
+  let f x = (x,x) in
+  [ (0, [f PC.true_lid; f PC.false_lid]);
+    (2, [f PC.and_lid; f PC.or_lid; f PC.imp_lid; f PC.iff_lid; f PC.eq2_lid; f PC.eq3_lid]);
+    (1, [f PC.not_lid]);
+    (3, [f PC.ite_lid; f PC.eq2_lid]);
+    (4, [f PC.eq3_lid])
+  ]
+
+let destruct_sq_base_table =
+  [ (2, [(PC.c_and_lid, PC.and_lid); (PC.c_or_lid, PC.or_lid);
+         (PC.c_eq2_lid, PC.c_eq2_lid); (PC.c_eq3_lid, PC.c_eq3_lid)]);
+    (3, [(PC.c_eq2_lid, PC.c_eq2_lid)]);
+    (4, [(PC.c_eq3_lid, PC.c_eq3_lid)]);
+    (0, [(PC.c_true_lid, PC.true_lid); (PC.c_false_lid, PC.false_lid)])
+  ]
+
 let destruct_typ_as_formula f : option<connective> =
     let rec unmeta_monadic f =
       let f = Subst.compress f in
@@ -1364,37 +1350,39 @@ let destruct_typ_as_formula f : option<connective> =
       | Tm_meta(t, Meta_monadic _)
       | Tm_meta(t, Meta_monadic_lift _) -> unmeta_monadic t
       | _ -> f in
-    let destruct_base_conn f =
-        let connectives = [ (PC.true_lid,  0);
-                            (PC.false_lid, 0);
-                            (PC.and_lid,   2);
-                            (PC.or_lid,    2);
-                            (PC.imp_lid, 2);
-                            (PC.iff_lid, 2);
-                            (PC.ite_lid, 3);
-                            (PC.not_lid, 1);
-                            (PC.eq2_lid, 3);
-                            (PC.eq2_lid, 2);
-                            (PC.eq3_lid, 4);
-                            (PC.eq3_lid, 2)
-                        ]
+    let lookup_arity_lid table target_lid args =
+        let arg_len = List.length args in
+        let aux (arity, lids) =
+            if arg_len = arity
+            then U.find_map lids
+                (fun (lid, out_lid) ->
+                  if lid_equals target_lid lid
+                  then Some (BaseConn (out_lid, args))
+                  else None)
+            else None
         in
-
-        let aux f (lid, arity) =
-            let t, args = head_and_args (unmeta_monadic f) in
-            let t = un_uinst t in
-            if is_constructor t lid
-            && List.length args = arity
-            then Some (BaseConn(lid, args))
-            else None in
-        U.find_map connectives (aux f) in
-
+        U.find_map table aux
+    in
+    let destruct_base_conn t =
+        let hd, args = head_and_args t in
+        match (un_uinst hd).n with
+        | Tm_fvar fv -> lookup_arity_lid destruct_base_table fv.fv_name.v args
+        | _ -> None
+    in
+    let destruct_sq_base_conn t =
+        bind_opt (un_squash t) (fun t ->
+        let hd, args = head_and_args' t in
+        match (un_uinst hd).n with
+        | Tm_fvar fv -> lookup_arity_lid destruct_sq_base_table fv.fv_name.v args
+        | _ -> None
+        )
+    in
     let patterns t =
         let t = compress t in
         match t.n with
-            | Tm_meta(t, Meta_pattern pats) -> pats, compress t
-            | _ -> [], t in
-
+            | Tm_meta(t, Meta_pattern (_, pats)) -> pats, compress t
+            | _ -> [], t
+    in
     let destruct_q_conn t =
         let is_q (fa:bool) (fv:fv) : bool =
             if fa
@@ -1426,53 +1414,6 @@ let destruct_typ_as_formula f : option<connective> =
 
             | _ -> None in
         aux None [] t in
-
-    // Unfolded connectives
-    let u_connectives =
-        [ (PC.true_lid,  PC.c_true_lid, 0);
-          (PC.false_lid, PC.c_false_lid, 0);
-          (PC.and_lid,   PC.c_and_lid, 2);
-          (PC.or_lid,    PC.c_or_lid, 2);
-        ]
-    in
-    let destruct_sq_base_conn t =
-        bind_opt (un_squash t) (fun t ->
-        let hd, args = head_and_args' t in
-        match (un_uinst hd).n, List.length args with
-        | Tm_fvar fv, 2
-            when fv_eq_lid fv PC.c_and_lid ->
-                Some (BaseConn (PC.and_lid, args))
-        | Tm_fvar fv, 2
-            when fv_eq_lid fv PC.c_or_lid ->
-                Some (BaseConn (PC.or_lid, args))
-
-        // eq2 can have 2 args or 3
-        | Tm_fvar fv, 2
-            when fv_eq_lid fv PC.c_eq2_lid ->
-                Some (BaseConn (PC.c_eq2_lid, args))
-        | Tm_fvar fv, 3
-            when fv_eq_lid fv PC.c_eq2_lid ->
-                Some (BaseConn (PC.c_eq2_lid, args))
-
-        // eq3 can have 2 args or 4
-        | Tm_fvar fv, 2
-            when fv_eq_lid fv PC.c_eq3_lid ->
-                Some (BaseConn (PC.c_eq3_lid, args))
-        | Tm_fvar fv, 4
-            when fv_eq_lid fv PC.c_eq3_lid ->
-                Some (BaseConn (PC.c_eq3_lid, args))
-
-        | Tm_fvar fv, 0
-            when fv_eq_lid fv PC.c_true_lid ->
-                Some (BaseConn (PC.true_lid, args))
-        | Tm_fvar fv, 0
-            when fv_eq_lid fv PC.c_false_lid ->
-                Some (BaseConn (PC.false_lid, args))
-
-        | _ ->
-            None
-        )
-    in
     let rec destruct_sq_forall t =
         bind_opt (un_squash t) (fun t ->
         match arrow_one t with
@@ -1548,7 +1489,8 @@ let action_as_lb eff_lid a pos =
     sigrng = a.action_defn.pos;
     sigquals = [Visible_default ; Action eff_lid];
     sigmeta = default_sigmeta;
-    sigattrs = [] }
+    sigattrs = [];
+    sigopts = None; }
 
 (* Some reification utilities *)
 let mk_reify t =
@@ -1684,7 +1626,7 @@ let rec term_eq_dbg (dbg : bool) t1 t2 =
     (check "arrow comp"    (comp_eq_dbg dbg c1 c2))
 
   | Tm_refine (b1,t1), Tm_refine (b2,t2) ->
-    (check "refine bv"      (b1.index = b2.index)) &&
+    (check "refine bv sort" (term_eq_dbg dbg b1.sort b2.sort)) &&
     (check "refine formula" (term_eq_dbg dbg t1 t2))
 
   | Tm_app (f1, a1), Tm_app (f2, a2) ->
@@ -1765,7 +1707,6 @@ and binder_eq_dbg (dbg : bool) b1 b2 =
     eqprod (fun b1 b2 -> check "binder sort"  (term_eq_dbg dbg b1.sort b2.sort))
            (fun q1 q2 -> check "binder qual"  (eq_aqual q1 q2 = Equal))
            b1 b2
-and lcomp_eq_dbg (c1:lcomp) (c2:lcomp) = fail "lcomp" // TODO
 and residual_eq_dbg (r1:residual_comp) (r2:residual_comp) = fail "residual"
 and comp_eq_dbg (dbg : bool) c1 c2 =
     let c1 = comp_to_comp_typ_nouniv c1 in
@@ -1821,12 +1762,22 @@ let is_synth_by_tactic t =
 let has_attribute (attrs:list<Syntax.attribute>) (attr:lident) =
      FStar.Util.for_some (is_fvar attr) attrs
 
+(* Checks whether the list of attrs contains an application of `attr`, and
+ * returns the arguments if so. If there's more than one, the first one
+ * takes precedence. *)
+let get_attribute (attr : lident) (attrs:list<Syntax.attribute>) : option<args> =
+    List.tryPick (fun t ->
+        let head, args = head_and_args t in
+        match (Subst.compress head).n with
+        | Tm_fvar fv when fv_eq_lid fv attr -> Some args
+        | _ -> None) attrs
+
 ///////////////////////////////////////////
 // Setting pragmas
 ///////////////////////////////////////////
 let process_pragma p r =
-    let set_options t s =
-    match Options.set_options t s with
+    let set_options s =
+      match Options.set_options s with
       | Getopt.Success -> ()
       | Getopt.Help  ->
         Errors.raise_error
@@ -1835,28 +1786,32 @@ let process_pragma p r =
                 r
       | Getopt.Error s ->
         Errors.raise_error
-                (Errors.Fatal_FailToProcessPragma,
-                 "Failed to process pragma: " ^s)
-                r
+                (Errors.Fatal_FailToProcessPragma, "Failed to process pragma: " ^ s) r
     in
     match p with
     | LightOff ->
-      if p = LightOff
-      then Options.set_ml_ish()
+      Options.set_ml_ish()
+
     | SetOptions o ->
-      set_options Options.Set o
+      set_options o
+
     | ResetOptions sopt ->
       Options.restore_cmd_line_options false |> ignore;
       begin match sopt with
       | None -> ()
-      | Some s -> set_options Options.Reset s
+      | Some s -> set_options s
       end
+
     | PushOptions sopt ->
       Options.internal_push ();
       begin match sopt with
       | None -> ()
-      | Some s -> set_options Options.Reset s
+      | Some s -> set_options s
       end
+
+    | RestartSolver ->
+      ()
+
     | PopOptions ->
       if Options.internal_pop ()
       then ()
@@ -1946,7 +1901,7 @@ let rec unbound_variables tm :  list<bv> =
       | Tm_meta(t, m) ->
         unbound_variables t
         @ (match m with
-           | Meta_pattern args ->
+           | Meta_pattern (_, args) ->
              List.collect (List.collect (fun (a, _) -> unbound_variables a)) args
 
            | Meta_monadic_lift(_, _, t')
@@ -1988,7 +1943,6 @@ let extract_attr (attr_lid:lid) (se:sigelt) : option<(sigelt * args)> =
     match extract_attr' attr_lid se.sigattrs with
     | None -> None
     | Some (attrs', t) -> Some ({ se with sigattrs = attrs' }, t)
-
 
 (* Utilities for working with Lemma's decorated with SMTPat *)
 let is_smt_lemma t = match (compress t).n with
@@ -2085,7 +2039,7 @@ let smt_lemma_as_forall (t:term) (universe_of_binders: binders -> list<universe>
     in
     (* Postcondition is thunked, c.f. #57 *)
     let post = unthunk_lemma_post post in
-    let body = mk (Tm_meta (mk_imp pre post, Meta_pattern patterns)) None t.pos in
+    let body = mk (Tm_meta (mk_imp pre post, Meta_pattern (binders_to_names binders, patterns))) None t.pos in
     let quant =
       List.fold_right2
         (fun b u out -> mk_forall u (fst b) out)
@@ -2096,3 +2050,135 @@ let smt_lemma_as_forall (t:term) (universe_of_binders: binders -> list<universe>
     quant
 
 (* End SMT Lemma utilities *)
+
+
+(* Effect utilities *)
+
+(*
+ * Mainly reading the combinators out of the eff_decl record
+ *
+ * For combinators that are present only in either wp or layered effects,
+ *   their getters return option<tscheme>
+ * Leaving it to the callers to deal with it
+ *)
+
+let eff_decl_of_new_effect (se:sigelt) :eff_decl =
+  match se.sigel with
+  | Sig_new_effect ne -> ne
+  | _ -> failwith "eff_decl_of_new_effect: not a Sig_new_effect"
+
+let is_layered (ed:eff_decl) : bool =
+  match ed.combinators with
+  | Layered_eff _ -> true
+  | _ -> false
+
+let is_dm4f (ed:eff_decl) : bool =
+  match ed.combinators with
+  | DM4F_eff _ -> true
+  | _ -> false
+
+let apply_wp_eff_combinators (f:tscheme -> tscheme) (combs:wp_eff_combinators)
+: wp_eff_combinators
+= { ret_wp = f combs.ret_wp;
+    bind_wp = f combs.bind_wp;
+    stronger = f combs.stronger;
+    if_then_else = f combs.if_then_else;
+    ite_wp = f combs.ite_wp;
+    close_wp = f combs.close_wp;
+    trivial = f combs.trivial;
+    
+    repr = map_option f combs.repr;
+    return_repr = map_option f combs.return_repr;
+    bind_repr = map_option f combs.bind_repr }
+
+let apply_layered_eff_combinators (f:tscheme -> tscheme) (combs:layered_eff_combinators)
+: layered_eff_combinators
+= let map_tuple (ts1, ts2) = (f ts1, f ts2) in
+  { l_base_effect = combs.l_base_effect;
+    l_repr = map_tuple combs.l_repr;
+    l_return = map_tuple combs.l_return;
+    l_bind = map_tuple combs.l_bind;
+    l_subcomp = map_tuple combs.l_subcomp;
+    l_if_then_else = map_tuple combs.l_if_then_else }
+
+let apply_eff_combinators (f:tscheme -> tscheme) (combs:eff_combinators) : eff_combinators =
+  match combs with
+  | Primitive_eff combs -> Primitive_eff (apply_wp_eff_combinators f combs)
+  | DM4F_eff combs -> DM4F_eff (apply_wp_eff_combinators f combs)
+  | Layered_eff combs -> Layered_eff (apply_layered_eff_combinators f combs)
+
+let get_wp_close_combinator (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> Some combs.close_wp
+  | _ -> None
+
+let get_eff_repr (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.repr
+  | Layered_eff combs -> combs.l_repr |> fst |> Some
+  
+let get_bind_vc_combinator (ed:eff_decl) : tscheme =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.bind_wp
+  | Layered_eff combs -> combs.l_bind |> snd
+
+let get_return_vc_combinator (ed:eff_decl) : tscheme =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.ret_wp
+  | Layered_eff combs -> combs.l_return |> snd
+  
+let get_bind_repr (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.bind_repr
+  | Layered_eff combs -> combs.l_bind |> fst |> Some
+
+let get_return_repr (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.return_repr  
+  | Layered_eff combs -> combs.l_return |> fst |> Some
+
+let get_wp_trivial_combinator (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.trivial |> Some
+  | _ -> None
+
+let get_layered_if_then_else_combinator (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Layered_eff combs -> combs.l_if_then_else |> fst |> Some
+  | _ -> None
+
+let get_wp_if_then_else_combinator (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.if_then_else |> Some
+  | _ -> None
+
+let get_wp_ite_combinator (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.ite_wp |> Some
+  | _ -> None
+
+let get_stronger_vc_combinator (ed:eff_decl) : tscheme =
+  match ed.combinators with
+  | Primitive_eff combs
+  | DM4F_eff combs -> combs.stronger
+  | Layered_eff combs -> combs.l_subcomp |> snd
+
+let get_stronger_repr (ed:eff_decl) : option<tscheme> =
+  match ed.combinators with
+  | Primitive_eff _
+  | DM4F_eff _ -> None
+  | Layered_eff combs -> combs.l_subcomp |> fst |> Some
+
+let get_layered_effect_base (ed:eff_decl) : option<lident> =
+  match ed.combinators with
+  | Layered_eff combs -> combs.l_base_effect |> Some
+  | _ -> None

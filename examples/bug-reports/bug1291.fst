@@ -103,7 +103,7 @@ let term_head t : string =
   | Tv_Refine x t -> "Tv_Refine"
   | Tv_Const cst -> "Tv_Const"
   | Tv_Uvar i t -> "Tv_Uvar"
-  | Tv_Let r b t1 t2 -> "Tv_Let"
+  | Tv_Let r attrs b t1 t2 -> "Tv_Let"
   | Tv_Match t branches -> "Tv_Match"
   | Tv_Unknown -> "Tv_Unknown"
 
@@ -547,8 +547,8 @@ let gpm #b #a (abspat : a) : unit -> Tac b =
 open FStar.Tactics // needed again because we overrode return and bind
 
 let example #a #b #c: unit =
-  assert_by_tactic (a /\ b ==> c == b ==> c)
-    (fun () -> repeat' #unit
+  assert (a /\ b ==> c == b ==> c)
+    by (repeat' #unit
        (fun () -> idtac ();
                   gpm #unit (fun (a: Type) (h: hyp (squash a)) ->
                     clear h <: Tac unit) `or_else`

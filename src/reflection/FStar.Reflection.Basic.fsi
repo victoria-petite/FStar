@@ -8,6 +8,9 @@ open FStar.Order
 module Env = FStar.TypeChecker.Env
 open FStar.Reflection.Data
 open FStar.ST
+module O = FStar.Options
+module RD = FStar.Reflection.Data
+module EMB = FStar.Syntax.Embeddings
 
 (* Tying a knot into the environment which started execution.
  * Needed to inspect sigelts and the like without needing
@@ -15,18 +18,29 @@ open FStar.ST
  * the TAC effect, and this crap is a symptom, let's move it. *)
 val env_hook : ref<option<Env.env>>
 
+(* Another hack to circumvent module recursion *)
+val e_optionstate_hook : ref<option<EMB.embedding<O.optionstate>>>
+
 (* Primitives *)
-val compare_bv     : bv -> bv -> order
-val lookup_typ     : Env.env -> list<string> -> option<sigelt>
-val is_free        : bv -> term -> bool
-val lookup_attr    : term -> Env.env -> list<fv>
-val binders_of_env : Env.env -> binders
-val moduleof       : Env.env -> list<string>
-val term_eq        : term -> term -> bool
-val term_to_string : term -> string
+val compare_bv            : bv -> bv -> order
+val lookup_typ            : Env.env -> list<string> -> option<sigelt>
+val is_free               : bv -> term -> bool
+val lookup_attr           : term -> Env.env -> list<fv>
+val all_defs_in_env       : Env.env -> list<fv>
+val defs_in_module        : Env.env -> name -> list<fv>
+val binders_of_env        : Env.env -> binders
+val moduleof              : Env.env -> list<string>
+val term_eq               : term -> term -> bool
+val term_to_string        : term -> string
+val comp_to_string        : comp -> string
+val env_open_modules      : Env.env -> list<name>
+val sigelt_opts           : sigelt -> option<term>
 
 val sigelt_attrs     : sigelt -> list<attribute>
 val set_sigelt_attrs : list<attribute> -> sigelt -> sigelt
+
+val sigelt_quals     : sigelt -> list<RD.qualifier>
+val set_sigelt_quals : list<RD.qualifier> -> sigelt -> sigelt
 
 (* Views *)
 val inspect_fv    : fv -> list<string>

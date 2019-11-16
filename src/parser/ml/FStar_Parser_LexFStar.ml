@@ -77,6 +77,7 @@ let () =
   Hashtbl.add keywords "module"        MODULE      ;
   Hashtbl.add keywords "new"           NEW         ;
   Hashtbl.add keywords "new_effect"    NEW_EFFECT  ;
+  Hashtbl.add keywords "layered_effect"               LAYERED_EFFECT  ;
   Hashtbl.add keywords "noextract"     NOEXTRACT   ;
   Hashtbl.add keywords "of"            OF          ;
   Hashtbl.add keywords "open"          OPEN        ;
@@ -447,6 +448,7 @@ let rec token = lexer
  | "#reset-options" -> PRAGMA_RESET_OPTIONS
  | "#push-options" -> PRAGMA_PUSH_OPTIONS
  | "#pop-options" -> PRAGMA_POP_OPTIONS
+ | "#restart-solver" -> PRAGMA_RESTART_SOLVER
  | "__SOURCE_FILE__" -> STRING (L.source_file lexbuf)
  | "__LINE__" -> INT (string_of_int (L.current_line lexbuf), false)
 

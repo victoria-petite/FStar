@@ -39,12 +39,6 @@ type option_val =
   | List of list<option_val>
   | Unset
 
-type options =
-  | Set
-  | Reset
-  | Restore
-
-
 type error_flag =
   | CFatal          //CFatal: these are reported using a raise_error: compiler cannot progress
   | CAlwaysError    //CAlwaysError: these errors are reported using log_issue and cannot be suppressed
@@ -54,7 +48,6 @@ type error_flag =
   | CWarning        //CWarning: reported using log_issue as warnings by default;
                     //          then can be silenced or escalated to errors
   | CSilent         //CSilent: never the default for any issue, but warnings can be silenced
-
 
 val defaults                    : list<(string * option_val)>
 
@@ -112,7 +105,6 @@ type opt_type =
 val desc_of_opt_type            : opt_type -> option<string>
 val all_specs_with_types        : list<(char * string * opt_type * string)>
 val settable                    : string -> bool
-val resettable                  : string -> bool
 
 val abort_counter : ref<int>
 
@@ -130,6 +122,8 @@ val codegen_libs                : unit    -> list<list<string>>
 val debug_any                   : unit    -> bool
 val debug_module                : string  -> bool
 val debug_at_level              : string  -> debug_level_t -> bool
+val profile_enabled             : module_name:option<string> -> profile_phase:string -> bool
+val profile_group_by_decls      : unit    -> bool
 val defensive                   : unit    -> bool // true if "warn" or "fail"
 val defensive_fail              : unit    -> bool // true if "fail"
 val dep                         : unit    -> option<string>
@@ -149,12 +143,11 @@ val get_option                  : string  -> option_val
 val full_context_dependency     : unit    -> bool
 val hide_uvar_nums              : unit    -> bool
 val hint_info                   : unit    -> bool
-val hint_file                   : unit    -> option<string>
+val hint_file_for_src           : string  -> string
 val ide                         : unit    -> bool
 val include_path                : unit    -> list<string>
 val print                       : unit    -> bool
 val print_in_place              : unit    -> bool
-val profile                     :  (unit -> 'a) -> ('a -> string) -> 'a
 val initial_fuel                : unit    -> int
 val initial_ifuel               : unit    -> int
 val interactive                 : unit    -> bool
@@ -162,6 +155,7 @@ val keep_query_captions         : unit    -> bool
 val lax                         : unit    -> bool
 val load                        : unit    -> list<string>
 val legacy_interactive          : unit    -> bool
+val lsp_server                  : unit    -> bool
 val log_queries                 : unit    -> bool
 val log_types                   : unit    -> bool
 val max_fuel                    : unit    -> int
@@ -169,7 +163,6 @@ val max_ifuel                   : unit    -> int
 val min_fuel                    : unit    -> int
 val ml_ish                      : unit    -> bool
 val set_ml_ish                  : unit    -> unit
-val n_cores                     : unit    -> int
 val no_default_includes         : unit    -> bool
 val no_extract                  : string  -> bool
 val no_location_info            : unit    -> bool
@@ -191,11 +184,14 @@ val print_implicits             : unit    -> bool
 val print_real_names            : unit    -> bool
 val print_universes             : unit    -> bool
 val print_z3_statistics         : unit    -> bool
+val quake_lo                    : unit    -> int
+val quake_hi                    : unit    -> int
 val query_stats                 : unit    -> bool
 val record_hints                : unit    -> bool
+val record_options              : unit    -> bool
 val reuse_hint_for              : unit    -> option<string>
 val set_option                  : string  -> option_val -> unit
-val set_options                 : options -> string -> parse_cmdline_res
+val set_options                 : string -> parse_cmdline_res
 val should_be_already_cached    : string  -> bool
 val should_print_message        : string  -> bool
 val should_extract              : string  -> bool
@@ -244,6 +240,8 @@ val ml_no_eta_expand_coertions  : unit    -> bool
 val warn_error                  : unit    -> string
 val use_extracted_interfaces    : unit    -> bool
 val use_nbe                     : unit    -> bool
+val trivial_pre_for_unannotated_effectful_fns
+                                : unit    -> bool
 
 // HACK ALERT! This is to ensure we have no dependency from Options to Version,
 // otherwise, since Version is regenerated all the time, this invalidates the

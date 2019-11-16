@@ -74,16 +74,41 @@ let prims =
         let xapp = mkApp(x, List.map mkFreeV vars) in //arity ok, see decl (#1383)
         let xtok = mkApp(xtok, []) in //arity ok, see decl (#1383)
         let xtok_app = mk_Apply xtok vars in
+
+        (*
+         * AR: adding IsTotFun axioms for the symbol itself, and its partial applications
+         *     NOTE: there are no typing guards here, but then there are no typing guards in
+         *           any of the other axioms too
+         *)
+        let tot_fun_axioms =
+          let all_vars_but_one = BU.prefix vars |> fst in
+          let axiom_name = "primitive_tot_fun_" ^ x in
+          //IsTotFun axiom for the symbol itself
+          let tot_fun_axiom_for_x = Util.mkAssume (mk_IsTotFun xtok, None, axiom_name) in
+          let axioms, _, _ =  //collect other axioms for partial applications
+            List.fold_left (fun (axioms, app, vars) var ->
+              let app = mk_Apply app [var] in
+              let vars = vars @ [var] in
+              let axiom_name = axiom_name ^ "." ^ (string_of_int (vars |> List.length)) in
+              axioms @ [Util.mkAssume (mkForall rng ([[app]], vars, mk_IsTotFun app), None, axiom_name)],
+              app,
+              vars
+            ) ([tot_fun_axiom_for_x], xtok, []) all_vars_but_one
+          in
+          axioms
+        in
+
         xtok,
         List.length vars,
-        [xname_decl;
-         xtok_decl;
-         Util.mkAssume(mkForall rng ([[xapp]], vars, mkEq(xapp, body)), None, "primitive_" ^x);
-         Util.mkAssume(mkForall rng ([[xtok_app]],
-                     vars,
-                     mkEq(xtok_app, xapp)),
-                     Some "Name-token correspondence",
-                     "token_correspondence_"^x)]
+        ([xname_decl;
+          xtok_decl;
+          Util.mkAssume(mkForall rng ([[xapp]], vars, mkEq(xapp, body)), None, "primitive_" ^x)] @
+         tot_fun_axioms @
+         [Util.mkAssume(mkForall rng ([[xtok_app]],
+                        vars,
+                        mkEq(xtok_app, xapp)),
+                        Some "Name-token correspondence",
+                        "token_correspondence_"^x)])
     in
     let axy = List.map mk_fv [(asym, Term_sort); (xsym, Term_sort); (ysym, Term_sort)] in
     let xy = List.map mk_fv [(xsym, Term_sort); (ysym, Term_sort)] in
@@ -380,7 +405,7 @@ let encode_smt_lemma env fv t =
 
 let encode_free_var uninterpreted env fv tt t_norm quals :decls_t * env_t =
     let lid = fv.fv_name.v in
-    if not <| (U.is_pure_or_ghost_function t_norm || is_reifiable_function env.tcenv t_norm)
+    if not <| (U.is_pure_or_ghost_function t_norm || is_smt_reifiable_function env.tcenv t_norm)
     || U.is_lemma t_norm
     || uninterpreted
     then let arg_sorts = match (SS.compress t_norm).n with
@@ -400,7 +425,7 @@ let encode_free_var uninterpreted env fv tt t_norm quals :decls_t * env_t =
               let formals, (pre_opt, res_t) =
                 let args, comp = curried_arrow_formals_comp t_norm in
                 let comp =
-                  if is_reifiable_comp env.tcenv comp
+                  if is_smt_reifiable_comp env.tcenv comp
                   then S.mk_Total (reify_comp ({env.tcenv with lax=true}) comp U_unknown)
                   else comp
                 in
@@ -467,7 +492,7 @@ let encode_free_var uninterpreted env fv tt t_norm quals :decls_t * env_t =
               let get_vtok () = Option.get vtok_opt in
               let vtok_tm =
                     match formals with
-                    | [] when not thunked -> mkFreeV <| mk_fv (vname, Term_sort)
+                    | [] when not thunked -> mkApp(vname, []) //mkFreeV <| mk_fv (vname, Term_sort)
                     | [] when thunked -> mkApp(vname, [dummy_tm])
                     | _ -> mkApp(get_vtok(), []) //not thunked
               in
@@ -487,7 +512,8 @@ let encode_free_var uninterpreted env fv tt t_norm quals :decls_t * env_t =
                       let tok_typing =
                         Util.mkAssume(tok_typing, Some "function token typing", ("function_token_typing_"^vname))
                       in
-                      decls2@([tok_typing] |> mk_decls_trivial), push_free_var env lid arity vname (Some <| mkFreeV (mk_fv (vname, Term_sort)))
+                      decls2@([tok_typing] |> mk_decls_trivial),
+                      push_free_var env lid arity vname (Some <| mkApp(vname, [])) //mkFreeV (mk_fv (vname, Term_sort)))
 
                     | _ when thunked -> decls2, env
 
@@ -672,9 +698,9 @@ let encode_top_level_let :
       in
       let binders, body, comp = aux t e in
       let binders, body, comp =
-          if is_reifiable_comp tcenv comp
+          if is_smt_reifiable_comp tcenv comp
           then let comp = reify_comp tcenv comp U_unknown in
-               let body = TcUtil.reify_body tcenv body in
+               let body = TcUtil.reify_body tcenv [] body in
                let more_binders, body, comp = aux comp body in
                binders@more_binders, body, comp
           else binders, body, comp
@@ -873,7 +899,16 @@ let encode_top_level_let :
               let gapp = mk_g_app (fuel_tm::vars_tm) in
               let tok_corr =
                 let tok_app = mk_Apply (mkFreeV <| mk_fv (gtok, Term_sort)) (fuel::vars) in
-                Util.mkAssume(mkForall (U.range_of_lbname lbn) ([[tok_app]], fuel::vars, mkEq(tok_app, gapp)),
+                let tot_fun_axioms =
+                  let head = mkFreeV <| mk_fv (gtok, Term_sort) in
+                  let vars = fuel :: vars in
+                  //the guards are trivial here since this tot_fun_axioms
+                  //should never appear in a goal (see Bug1750.fst, test_currying)
+                  let guards = List.map (fun _ -> mkTrue) vars in
+                  EncodeTerm.isTotFun_axioms rng head vars guards (U.is_pure_comp tres_comp)
+                in
+                Util.mkAssume(mkAnd(mkForall (U.range_of_lbname lbn) ([[tok_app]], fuel::vars, mkEq(tok_app, gapp)),
+                                    tot_fun_axioms),
                               Some "Fuel token correspondence",
                               ("fuel_token_correspondence_"^gtok))
               in
@@ -917,7 +952,7 @@ let encode_top_level_let :
 
         if quals |> BU.for_some (function HasMaskedEffect -> true | _ -> false)
         || typs  |> BU.for_some (fun t -> not <| (U.is_pure_or_ghost_function t ||
-                                                  is_reifiable_function env.tcenv t))
+                                                  is_smt_reifiable_function env.tcenv t))
         then decls, env_decls
         else
           try
@@ -927,7 +962,20 @@ let encode_top_level_let :
               encode_non_rec_lbdef bindings typs toks_fvbs env
             else
               encode_rec_lbdefs bindings typs toks_fvbs env
-          with Inner_let_rec -> decls, env_decls  //decls are type declarations for the lets, if there is an inner let rec, only those are encoded to the solver
+          with
+            | Inner_let_rec names ->
+              let plural = List.length names > 1 in
+              let r = List.hd names |> snd in
+              FStar.TypeChecker.Err.add_errors
+                env.tcenv
+                [(Errors.Warning_DefinitionNotTranslated,
+                  BU.format3
+                    "Definitions of inner let-rec%s %s and %s enclosing top-level letbinding are not encoded to the solver, you will only be able to reason with their types"
+                    (if plural then "s" else "")
+                    (List.map fst names |> String.concat ",")
+                    (if plural then "their" else "its"),
+                  r)];
+              decls, env_decls  //decls are type declarations for the lets, if there is an inner let rec, only those are encoded to the solver
 
     with Let_rec_unencodeable ->
       let msg = bindings |> List.map (fun lb -> Print.lbname_to_string lb.lbname) |> String.concat " and " in
@@ -964,8 +1012,6 @@ and encode_sigelt' (env:env_t) (se:sigelt) : (decls_t * env_t) =
         | _ -> false
     in
     match se.sigel with
-     | Sig_new_effect_for_free _ ->
-         failwith "impossible -- new_effect_for_free should have been removed by Tc.fs"
      | Sig_splice _ ->
          failwith "impossible -- splice should have been removed by Tc.fs"
      | Sig_pragma _
@@ -974,7 +1020,7 @@ and encode_sigelt' (env:env_t) (se:sigelt) : (decls_t * env_t) =
      | Sig_sub_effect _ -> [], env
 
      | Sig_new_effect(ed) ->
-       if not (Env.is_reifiable_effect env.tcenv ed.mname)
+       if not (is_smt_reifiable_effect env.tcenv ed.mname)
        then [], env
        else (* The basic idea:
                     1. Encode M.bind_repr: a:Type -> b:Type -> wp_a -> wp_b -> f:st_repr a wp_a -> g:(a -> st_repr b) : st_repr b
@@ -1286,8 +1332,14 @@ and encode_sigelt' (env:env_t) (se:sigelt) : (decls_t * env_t) =
             let karr =
                 if List.length formals > 0
                 then [Util.mkAssume(mk_tester "Tm_arrow" (mk_PreType ttok_tm), Some "kinding", ("pre_kinding_"^ttok))]
-                else [] in
-            decls@(karr@[Util.mkAssume(mkForall (Ident.range_of_lid t) ([[tapp]], vars, mkImp(guard, k)), None, ("kinding_"^ttok))]
+                else []
+            in
+            let rng = Ident.range_of_lid t in
+            let tot_fun_axioms =
+              EncodeTerm.isTotFun_axioms rng ttok_tm vars (List.map (fun _ -> mkTrue) vars) true
+            in
+
+            decls@(karr@[Util.mkAssume(mkAnd(tot_fun_axioms, mkForall rng ([[tapp]], vars, mkImp(guard, k))), None, ("kinding_"^ttok))]
                    |> mk_decls_trivial) in
         let aux =
             kindingAx
@@ -1660,22 +1712,23 @@ let encode_modul tcenv modul =
     decls, env |> get_current_module_fvbs
   end
 
-let encode_modul_from_cache tcenv name (decls, fvbs) =
+let encode_modul_from_cache tcenv tcmod (decls, fvbs) =
   if Options.lax () && Options.ml_ish () then ()
   else
+    let name = BU.format2 "%s %s" (if tcmod.is_interface then "interface" else "module") tcmod.name.str in
     if Env.debug tcenv Options.Medium
-    then BU.print2 "+++++++++++Encoding externals from cache for %s ... %s decls\n" name.str (List.length decls |> string_of_int);
-    let env = get_env name tcenv |> reset_current_module_fvbs in
+    then BU.print2 "+++++++++++Encoding externals from cache for %s ... %s decls\n" name (List.length decls |> string_of_int);
+    let env = get_env tcmod.name tcenv |> reset_current_module_fvbs in
     let env =
       fvbs |> List.rev |> List.fold_left (fun env fvb ->
         add_fvar_binding_to_env fvb env
       ) env in
-    give_decls_to_z3_and_set_env env name.str decls;
-    if Env.debug tcenv Options.Medium then BU.print1 "Done encoding externals from cache for %s\n" name.str
+    give_decls_to_z3_and_set_env env name decls;
+    if Env.debug tcenv Options.Medium then BU.print1 "Done encoding externals from cache for %s\n" name
 
 open FStar.SMTEncoding.Z3
 let encode_query use_env_msg tcenv q
-  : list<decl>  //prelude, translation of tcenv
+  : list<decl>  //prelude, translation of  tcenv
   * list<ErrorReporting.label> //labels in the query
   * decl        //the query itself
   * list<decl>  //suffix, evaluating labels in the model, etc.

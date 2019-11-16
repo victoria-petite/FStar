@@ -12,6 +12,7 @@ module Err = FStar.Errors
 module S = FStar.Syntax.Syntax
 module SS = FStar.Syntax.Subst
 module PC = FStar.Parser.Const
+open FStar.TypeChecker.Common
 open FStar.TypeChecker.Env
 module Env = FStar.TypeChecker.Env
 module BU = FStar.Util
@@ -22,6 +23,7 @@ module TcUtil = FStar.TypeChecker.Util
 module TcTerm = FStar.TypeChecker.TcTerm
 module Cfg = FStar.TypeChecker.Cfg
 module N = FStar.TypeChecker.Normalize
+module TcComm = FStar.TypeChecker.Common
 module Env = FStar.TypeChecker.Env
 open FStar.Tactics.Types
 open FStar.Tactics.Result
@@ -46,6 +48,10 @@ let tacdbg = BU.mk_ref false
  * are in other modules: *)
 let mktot1' uarity nm f ea er nf ena enr =
   { mktot1  uarity nm f ea er nf ena enr
+    with Cfg.name = Ident.lid_of_str ("FStar.Tactics.Types." ^ nm) }
+
+let mktot1'_psc uarity nm f ea er nf ena enr =
+  { mktot1_psc  uarity nm f ea er nf ena enr
     with Cfg.name = Ident.lid_of_str ("FStar.Tactics.Types." ^ nm) }
 
 let mktot2' uarity nm f ea eb er nf ena enb enr =
@@ -92,8 +98,8 @@ and primitive_steps () : list<Cfg.primitive_step> =
     (* Sigh, due to lack to expressive typing we need to duplicate a bunch of information here,
      * like which embeddings are needed for the arguments, but more annoyingly the underlying
      * implementation. Would be nice to have something better in the not-so-long run. *)
-    [ mktot1' 0 "tracepoint"  tracepoint E.e_proofstate e_unit
-                              tracepoint E.e_proofstate_nbe NBET.e_unit;
+    [ mktot1'_psc 0 "tracepoint"  tracepoint E.e_proofstate e_unit
+                                  tracepoint E.e_proofstate_nbe NBET.e_unit;
 
       mktot2' 0 "set_proofstate_range" set_proofstate_range E.e_proofstate e_range E.e_proofstate
                                        set_proofstate_range E.e_proofstate_nbe NBET.e_range E.e_proofstate_nbe;
@@ -186,8 +192,8 @@ and primitive_steps () : list<Cfg.primitive_step> =
       mktac3 0 "t_exact"       t_exact e_bool e_bool RE.e_term e_unit
                                t_exact NBET.e_bool NBET.e_bool NRE.e_term NBET.e_unit;
 
-      mktac2 1 "t_apply"       t_apply e_bool RE.e_term e_unit
-                               t_apply NBET.e_bool NRE.e_term NBET.e_unit;
+      mktac3 0 "t_apply"       t_apply e_bool e_bool RE.e_term e_unit
+                               t_apply NBET.e_bool NBET.e_bool NRE.e_term NBET.e_unit;
 
       mktac1 0 "apply_lemma"   apply_lemma RE.e_term e_unit
                                apply_lemma NRE.e_term NBET.e_unit;
@@ -195,8 +201,11 @@ and primitive_steps () : list<Cfg.primitive_step> =
       mktac1 0 "set_options"   set_options e_string e_unit
                                set_options NBET.e_string NBET.e_unit;
 
-      mktac1 0 "tc"            tc RE.e_term RE.e_term
-                               tc NRE.e_term NRE.e_term;
+      mktac2 0 "tcc"           tcc RE.e_env RE.e_term RE.e_comp
+                               tcc NRE.e_env NRE.e_term NRE.e_comp;
+
+      mktac2 0 "tc"            tc RE.e_env RE.e_term RE.e_term
+                               tc NRE.e_env NRE.e_term NRE.e_term;
 
       mktac1 0 "unshelve"      unshelve RE.e_term e_unit
                                unshelve NRE.e_term NBET.e_unit;
@@ -216,8 +225,8 @@ and primitive_steps () : list<Cfg.primitive_step> =
       mktac1 0 "debugging"     debugging e_unit e_bool
                                debugging NBET.e_unit NBET.e_bool;
 
-      mktac1 0 "dump"          print_proof_state e_string e_unit
-                               print_proof_state NBET.e_string NBET.e_unit;
+      mktac1 0 "dump"          dump e_string e_unit
+                               dump NBET.e_string NBET.e_unit;
 
       mktac2 0 "t_pointwise"   pointwise E.e_direction (e_tactic_thunk e_unit) e_unit
                                pointwise E.e_direction_nbe (e_tactic_nbe_thunk NBET.e_unit) NBET.e_unit;
@@ -237,9 +246,6 @@ and primitive_steps () : list<Cfg.primitive_step> =
       mktac1 0 "join"          join  e_unit e_unit
                                join  NBET.e_unit NBET.e_unit;
 
-      mktac1 0 "cases"         cases RE.e_term (e_tuple2 RE.e_term RE.e_term)
-                               cases NRE.e_term (NBET.e_tuple2 NRE.e_term NRE.e_term);
-
       mktac1 0 "t_destruct"    t_destruct RE.e_term (e_list (e_tuple2 RE.e_fv e_int))
                                t_destruct NRE.e_term (NBET.e_list (NBET.e_tuple2 NRE.e_fv NBET.e_int));
 
@@ -254,6 +260,9 @@ and primitive_steps () : list<Cfg.primitive_step> =
 
       mktac1 0 "fresh"         fresh       e_unit e_int
                                fresh       NBET.e_unit NBET.e_int;
+
+      mktac1 0 "curms"         curms       e_unit e_int
+                               curms       NBET.e_unit NBET.e_int;
 
       mktac2 0 "uvar_env"      uvar_env RE.e_env (e_option RE.e_term) RE.e_term
                                uvar_env NRE.e_env (NBET.e_option NRE.e_term) NRE.e_term;
@@ -287,7 +296,7 @@ and primitive_steps () : list<Cfg.primitive_step> =
                                   (fun _ _ _ -> fail "sorry, `lset` does not work in NBE")
                                         NBET.e_any NBET.e_string NBET.e_any NBET.e_unit;
 
-    ] @ reflection_primops @ (native_tactics_steps ())
+    ] @ (native_tactics_steps ())
 
 // Please note, these markers are for some makefile magic that tweaks this function in the OCaml output
 
@@ -324,11 +333,11 @@ and unembed_tactic_0<'b> (eb:embedding<'b>) (embedded_tac_b:term) (ncb:norm_cb) 
                  then NBE.normalize
                  else N.normalize_with_primitive_steps
     in
-    if proof_state.tac_verb_dbg then
-        BU.print1 "Starting normalizer with %s\n" (Print.term_to_string tm);
+    (* if proof_state.tac_verb_dbg then *)
+    (*     BU.print1 "Starting normalizer with %s\n" (Print.term_to_string tm); *)
     let result = norm_f (primitive_steps ()) steps proof_state.main_context tm in
-    if proof_state.tac_verb_dbg then
-        BU.print1 "Reduced tactic: got %s\n" (Print.term_to_string result);
+    (* if proof_state.tac_verb_dbg then *)
+    (*     BU.print1 "Reduced tactic: got %s\n" (Print.term_to_string result); *)
 
     // F* requires more annotations.
     // IN F*: let res : option<__result<b>> = unembed (E.e_result eb) result ncb in
@@ -404,11 +413,15 @@ let report_implicits rng (is : Env.implicits) : unit =
     Err.add_errors errs;
     Err.stop_if_err ()
 
-let run_tactic_on_typ
+let run_tactic_on_ps
         (rng_tac : Range.range) (rng_goal : Range.range)
-        (tactic:term) (env:env) (typ:typ)
+        (e_arg : embedding<'a>)
+        (arg : 'a)
+        (e_res : embedding<'b>)
+        (tactic:term)
+        (env:env) (ps:proofstate)
                     : list<goal> // remaining goals
-                    * term // witness
+                    * 'b // return value
                     =
     if !tacdbg then
         BU.print1 "Typechecking tactic: (%s) {\n" (Print.term_to_string tactic);
@@ -416,34 +429,30 @@ let run_tactic_on_typ
     (* Do NOT use the returned tactic, the typechecker is not idempotent and
      * will mess up the monadic lifts. We're just making sure it's well-typed
      * so it won't get stuck. c.f #1307 *)
-    let _, _, g = TcTerm.tc_tactic env tactic in
+    let _, _, g = TcTerm.tc_tactic (type_of e_arg) (type_of e_res) env tactic in
     if !tacdbg then
         BU.print_string "}\n";
 
-    TcRel.force_trivial_guard env g;
-    Err.stop_if_err ();
-    let tau = unembed_tactic_1 e_unit e_unit tactic FStar.Syntax.Embeddings.id_norm_cb in
-    let env, _ = Env.clear_expected_typ env in
-    let env = { env with Env.instantiate_imp = false } in
     (* TODO: We do not faithfully expose universes to metaprograms *)
     let env = { env with Env.lax_universes = true } in
-    let env = { env with failhard = true } in
-    let rng = range_of_rng (use_range rng_goal) (use_range rng_tac) in
-    let ps, w = proofstate_of_goal_ty rng env typ in
+
+    TcRel.force_trivial_guard env g;
+    Err.stop_if_err ();
+    let tau = unembed_tactic_1 e_arg e_res tactic FStar.Syntax.Embeddings.id_norm_cb in
 
     Reflection.Basic.env_hook := Some env;
-    if !tacdbg then
-        BU.print1 "Running tactic with goal = (%s) {\n" (Print.term_to_string typ);
-    let res, ms = BU.record_time (fun () -> run_safe (tau ()) ps) in
+    (* if !tacdbg then *)
+    (*     BU.print1 "Running tactic with goal = (%s) {\n" (Print.term_to_string typ); *)
+    let res, ms = BU.record_time (fun () -> run_safe (tau arg) ps) in
     if !tacdbg then
         BU.print_string "}\n";
     if !tacdbg || Options.tactics_info () then
         BU.print3 "Tactic %s ran in %s ms (%s)\n" (Print.term_to_string tactic) (string_of_int ms) (Print.lid_to_string env.curmodule);
 
     match res with
-    | Success (_, ps) ->
-        if !tacdbg then
-            BU.print1 "Tactic generated proofterm %s\n" (Print.term_to_string w);
+    | Success (ret, ps) ->
+        (* if !tacdbg || Options.tactics_info () then *)
+        (*     BU.print1 "Tactic generated proofterm %s\n" (Print.term_to_string w); *)
         List.iter (fun g -> if is_irrelevant g
                             then if TcRel.teq_nosmt_force (goal_env g) (goal_witness g) U.exp_unit
                                  then ()
@@ -457,7 +466,7 @@ let run_tactic_on_typ
             BU.print1 "About to check tactic implicits: %s\n" (FStar.Common.string_of_list
                                                                     (fun imp -> Print.ctx_uvar_to_string imp.imp_uvar)
                                                                     ps.all_implicits);
-        let g = {Env.trivial_guard with Env.implicits=ps.all_implicits} in
+        let g = {Env.trivial_guard with TcComm.implicits=ps.all_implicits} in
         let g = TcRel.solve_deferred_constraints env g in
         if !tacdbg then
             BU.print2 "Checked %s implicits (1): %s\n"
@@ -476,11 +485,11 @@ let run_tactic_on_typ
         // /implicits
 
         if !tacdbg then
-            dump_proofstate (subst_proof_state (Cfg.psc_subst ps.psc) ps) "at the finish line";
-        (ps.goals@ps.smt_goals, w)
+            do_dump_proofstate (subst_proof_state (Cfg.psc_subst ps.psc) ps) "at the finish line";
+        (ps.goals@ps.smt_goals, ret)
 
     | Failed (e, ps) ->
-        dump_proofstate (subst_proof_state (Cfg.psc_subst ps.psc) ps) "at the time of failure";
+        do_dump_proofstate (subst_proof_state (Cfg.psc_subst ps.psc) ps) "at the time of failure";
         let texn_to_string e =
             match e with
             | TacticFailure s ->
@@ -493,6 +502,17 @@ let run_tactic_on_typ
         Err.raise_error (Err.Fatal_UserTacticFailure,
                             BU.format1 "user tactic failed: %s" (texn_to_string e))
                           ps.entry_range
+
+let run_tactic_on_typ
+        (rng_tac : Range.range) (rng_goal : Range.range)
+        (tactic:term) (env:env) (typ:term)
+                    : list<goal> // remaining goals
+                    * term // witness
+                    =
+    let rng = range_of_rng (use_range rng_goal) (use_range rng_tac) in
+    let ps, w = proofstate_of_goal_ty rng env typ in
+    let gs, _res = run_tactic_on_ps rng_tac rng_goal e_unit () e_unit tactic env ps in
+    gs, w
 
 // Polarity
 type pol =
@@ -520,7 +540,7 @@ let by_tactic_interp (pol:pol) (e:Env.env) (t:term) : tres =
     match (U.un_uinst hd).n, args with
 
     // with_tactic marker
-    | Tm_fvar fv, [(rett, Some (Implicit _)); (tactic, None); (assertion, None)]
+    | Tm_fvar fv, [(tactic, None); (assertion, None)]
             when S.fv_eq_lid fv PC.by_tactic_lid ->
         begin match pol with
         | Pos ->
@@ -753,8 +773,13 @@ let synthesize (env:Env.env) (typ:typ) (tau:term) : term =
 let splice (env:Env.env) (tau:term) : list<sigelt> =
     if env.nosynth then [] else begin
     tacdbg := Env.debug env (Options.Other "Tac");
+
     let typ = S.t_decls in // running with goal type FStar.Reflection.Data.decls
-    let gs, w = run_tactic_on_typ tau.pos tau.pos tau env typ in
+    let ps = proofstate_of_goals tau.pos env [] [] in
+    let gs, sigelts = run_tactic_on_ps tau.pos tau.pos
+                                  e_unit ()
+                                  (e_list RE.e_sigelt) tau env ps in
+
     // Check that all goals left are irrelevant. We don't need to check their
     // validity, as we will typecheck the witness independently.
     // TODO: Do not retypecheck and do just like `synth`. But that's hard.. what to do for inductives,
@@ -763,17 +788,20 @@ let splice (env:Env.env) (tau:term) : list<sigelt> =
     if List.existsML (fun g -> not (Option.isSome (getprop (goal_env g) (goal_type g)))) gs
         then Err.raise_error (Err.Fatal_OpenGoalsInSynthesis, "splice left open goals") typ.pos;
 
-    // Fully normalize the witness
-    let w = N.normalize [Env.Weak; Env.HNF; Env.UnfoldUntil delta_constant;
-                         Env.Primops; Env.Unascribe; Env.Unmeta] env w in
-
     if !tacdbg then
-      BU.print1 "splice: got witness = %s\n" (Print.term_to_string w);
+      BU.print1 "splice: got decls = %s\n"
+                 (FStar.Common.string_of_list Print.sigelt_to_string sigelts);
 
     // Unembed the result, this must work if things are well-typed
-    match unembed (e_list RE.e_sigelt) w FStar.Syntax.Embeddings.id_norm_cb with
-    | Some sigelts -> sigelts
-    | None -> Err.raise_error (Err.Fatal_SpliceUnembedFail, "splice: failed to unembed sigelts") typ.pos
+    sigelts
+    end
+
+let mpreprocess (env:Env.env) (tau:term) (tm:term) : term =
+    if env.nosynth then tm else begin
+    tacdbg := Env.debug env (Options.Other "Tac");
+    let ps = proofstate_of_goals tm.pos env [] [] in
+    let gs, tm = run_tactic_on_ps tau.pos tm.pos RE.e_term tm RE.e_term tau env ps in
+    tm
     end
 
 let postprocess (env:Env.env) (tau:term) (typ:term) (tm:term) : term =

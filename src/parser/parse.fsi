@@ -50,6 +50,7 @@ type token =
   | QMARK
   | PRIVATE
   | PRAGMA_SET_OPTIONS
+  | PRAGMA_RESTART_SOLVER
   | PRAGMA_RESET_OPTIONS
   | PRAGMA_PUSH_OPTIONS
   | PRAGMA_POP_OPTIONS
@@ -90,6 +91,7 @@ type token =
   | LBRACK
   | LBRACE_COLON_PATTERN
   | LBRACE
+  | LAYERED_EFFECT
   | LARROW
   | IRREDUCIBLE
   | INT8 of (string * bool)
@@ -204,6 +206,7 @@ type tokenId =
     | TOKEN_QMARK
     | TOKEN_PRIVATE
     | TOKEN_PRAGMA_SET_OPTIONS
+    | TOKEN_PRAGMA_RESTART_SOLVER
     | TOKEN_PRAGMA_RESET_OPTIONS
     | TOKEN_PRAGMA_PUSH_OPTIONS
     | TOKEN_PRAGMA_POP_OPTIONS
@@ -244,6 +247,7 @@ type tokenId =
     | TOKEN_LBRACK
     | TOKEN_LBRACE_COLON_PATTERN
     | TOKEN_LBRACE
+    | TOKEN_LAYERED_EFFECT
     | TOKEN_LARROW
     | TOKEN_IRREDUCIBLE
     | TOKEN_INT8
@@ -361,7 +365,6 @@ type nonTerminalId =
     | NONTERM_separated_nonempty_list_DISJUNCTION_conjunctivePat_
     | NONTERM_separated_nonempty_list_SEMICOLON_appTerm_
     | NONTERM_separated_nonempty_list_SEMICOLON_effectDecl_
-    | NONTERM_separated_nonempty_list_SEMICOLON_fieldPattern_
     | NONTERM_separated_nonempty_list_SEMICOLON_lidentOrOperator_
     | NONTERM_separated_nonempty_list_SEMICOLON_tuplePattern_
     | NONTERM_inputFragment
@@ -470,9 +473,11 @@ type nonTerminalId =
     | NONTERM_flag
     | NONTERM_range
     | NONTERM_some_fsTypeArgs_
+    | NONTERM_right_flexible_list_SEMICOLON_fieldPattern_
     | NONTERM_right_flexible_list_SEMICOLON_noSeqTerm_
     | NONTERM_right_flexible_list_SEMICOLON_recordFieldDecl_
     | NONTERM_right_flexible_list_SEMICOLON_simpleDef_
+    | NONTERM_right_flexible_nonempty_list_SEMICOLON_fieldPattern_
     | NONTERM_right_flexible_nonempty_list_SEMICOLON_recordFieldDecl_
     | NONTERM_right_flexible_nonempty_list_SEMICOLON_simpleDef_
     | NONTERM_reverse_left_flexible_list_BAR___anonymous_7_

@@ -123,11 +123,20 @@ let reflection_primops : list<Cfg.primitive_step> = [
     mk1 "pack_bv"               pack_bv               E.e_bv_view         E.e_bv
                                 pack_bv               NRE.e_bv_view       NRE.e_bv;
 
+    mk1 "sigelt_opts"           sigelt_opts           E.e_sigelt          (e_option E.e_term)
+                                sigelt_opts           NRE.e_sigelt        (NBET.e_option NRE.e_term);
+
     mk1 "sigelt_attrs"          sigelt_attrs          E.e_sigelt          E.e_attributes
                                 sigelt_attrs          NRE.e_sigelt        NRE.e_attributes;
 
     mk2 "set_sigelt_attrs"      set_sigelt_attrs      E.e_attributes      E.e_sigelt         E.e_sigelt
                                 set_sigelt_attrs      NRE.e_attributes    NRE.e_sigelt       NRE.e_sigelt;
+
+    mk1 "sigelt_quals"          sigelt_quals          E.e_sigelt          E.e_qualifiers
+                                sigelt_quals          NRE.e_sigelt        NRE.e_qualifiers;
+
+    mk2 "set_sigelt_quals"      set_sigelt_quals      E.e_qualifiers      E.e_sigelt         E.e_sigelt
+                                set_sigelt_quals      NRE.e_qualifiers    NRE.e_sigelt       NRE.e_sigelt;
 
     mk1 "inspect_binder"        inspect_binder        E.e_binder          E.e_binder_view
                                 inspect_binder        NRE.e_binder        NRE.e_binder_view;
@@ -144,6 +153,12 @@ let reflection_primops : list<Cfg.primitive_step> = [
     mk2 "lookup_attr"           RB.lookup_attr        E.e_term            E.e_env            (e_list E.e_fv)
                                 RB.lookup_attr        NRE.e_term          NRE.e_env          (NBET.e_list NRE.e_fv);
 
+    mk1 "all_defs_in_env"       RB.all_defs_in_env    E.e_env             (e_list E.e_fv)
+                                RB.all_defs_in_env    NRE.e_env           (NBET.e_list NRE.e_fv);
+
+    mk2 "defs_in_module"        RB.defs_in_module     E.e_env             e_string_list      (e_list E.e_fv)
+                                RB.defs_in_module     NRE.e_env           NBET.e_string_list (NBET.e_list NRE.e_fv);
+
     mk2 "term_eq"               term_eq               E.e_term            E.e_term           e_bool
                                 term_eq               NRE.e_term          NRE.e_term         NBET.e_bool;
 
@@ -153,9 +168,17 @@ let reflection_primops : list<Cfg.primitive_step> = [
     mk1 "term_to_string"        term_to_string        E.e_term            e_string
                                 term_to_string        NRE.e_term          NBET.e_string;
 
+    mk1 "comp_to_string"        comp_to_string        E.e_comp            e_string
+                                comp_to_string        NRE.e_comp          NBET.e_string;
+
     mk1 "binders_of_env"        binders_of_env        E.e_env             E.e_binders
                                 binders_of_env        NRE.e_env           NRE.e_binders;
 
     mk2 "lookup_typ"            lookup_typ            E.e_env             e_string_list      (e_option E.e_sigelt)
                                 lookup_typ            NRE.e_env           NBET.e_string_list (NBET.e_option NRE.e_sigelt);
+
+    mk1 "env_open_modules"      env_open_modules      E.e_env             (e_list e_string_list)
+                                env_open_modules      NRE.e_env           (NBET.e_list NBET.e_string_list);
 ]
+
+let _ = List.iter FStar.TypeChecker.Cfg.register_extra_step reflection_primops

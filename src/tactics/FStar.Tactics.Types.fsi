@@ -35,7 +35,6 @@ type guard_policy =
 
 type proofstate = {
     main_context : env;          //the shared top-level context for all goals
-    main_goal    : goal;         //this is read only; it helps keep track of the goal we started working on initially
     all_implicits: implicits ;   //all the implicits currently open, partially resolved
 
     // NOTE: Goals are user-settable, the "goals" we mean in
@@ -60,7 +59,7 @@ type proofstate = {
 
 val decr_depth : proofstate -> proofstate
 val incr_depth : proofstate -> proofstate
-val tracepoint : proofstate -> unit
+val tracepoint : Cfg.psc -> proofstate -> unit
 val set_proofstate_range : proofstate -> Range.range -> proofstate
 
 val subst_proof_state: subst_t -> proofstate -> proofstate

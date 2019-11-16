@@ -27,17 +27,44 @@ assume val f_sq    : squash p -> squash q
 assume val f_unsq  : squash p -> q
 
 let _ =
-    assert_by_tactic q (fun () -> mapply (quote lem_imp);
-                                  mapply (quote x))
+    assert q by (mapply (quote lem_imp);
+                 mapply (quote x))
 
 let _ =
-    assert_by_tactic q (fun () -> mapply (quote lem);
-                                  mapply (quote x))
+    assert q by (mapply (quote lem);
+                 mapply (quote x))
 
 let _ =
-    assert_by_tactic q (fun () -> mapply (quote f_sq);
-                                  mapply (quote x))
+    assert q by (mapply (quote f_sq);
+                 mapply (quote x))
 
 let _ =
-    assert_by_tactic q (fun () -> mapply (quote f_unsq);
-                                  mapply (quote x))
+    assert q by (mapply (quote f_unsq);
+                 mapply (quote x))
+
+let _ =
+  assert ((p ==> q) ==> p ==> q)
+      by (let i = implies_intro () in
+          let h = implies_intro () in
+          mapply i;
+          mapply h)
+
+let _ =
+  assert (squash (p ==> q) ==> p ==> q)
+      by (let i = implies_intro () in
+          let h = implies_intro () in
+          mapply i;
+          mapply h)
+
+let _ =
+  assert (squash (p ==> q) ==> squash p ==> q)
+      by (let i = implies_intro () in
+          let h = implies_intro () in
+          mapply i;
+          mapply h)
+let _ =
+  assert ((p ==> q) ==> squash p ==> q)
+      by (let i = implies_intro () in
+          let h = implies_intro () in
+          mapply i;
+          mapply h)

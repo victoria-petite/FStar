@@ -45,9 +45,13 @@ assume val fresh : unit -> Tac int
 into [w : t] and [phi{w/x}] *)
 assume val refine_intro : unit -> Tac unit
 
-(** [tc] returns the type of a term in the current environment,
+(** [tc] returns the type of a term in [env],
 or fails if it is untypeable. *)
-assume val tc : term -> Tac term
+assume val tc : env -> term -> Tac term
+
+(** [tcc] like [tc], but returns the full computation type
+with the effect label and its arguments (WPs, etc) as well *)
+assume val tcc : env -> term -> Tac comp
 
 (** [unshelve] creates a goal from a term for its given type.
 It can be used when the system decided not to present a goal, but
@@ -158,7 +162,7 @@ if it's not solved later.
 
 You probably want [apply] from FStar.Tactics.Derived.
 *)
-assume val t_apply : bool -> term -> Tac unit
+assume val t_apply : bool -> bool -> term -> Tac unit
 
 (** [apply_lemma l] will solve a goal of type [squash phi] when [l] is a Lemma
 ensuring [phi]. The arguments to [l] and its requires clause are introduced as new goals.
@@ -233,13 +237,6 @@ assume val prune : string -> Tac unit
 (** The opposite operation of [prune]. The latest one takes precedence. *)
 assume val addns : string -> Tac unit
 
-(** Given a disjunction [e], destruct it and generate two goals
-for each case. Return value is terms representing proofs for each case.
-The first one is only valid in the first goal, and likewise for
-the second (TODO: change this awful behaviour).
-*)
-assume val cases : term -> Tac (term * term)
-
 (** Destruct a value of an inductive type by matching on it. The generated
 match has one branch for each constructor and is therefore trivially
 exhaustive, no VC is generated for that purpose. It returns a list
@@ -266,7 +263,7 @@ assume val unify_env : env -> term -> term -> Tac bool
 [input] and returns the output. For security reasons, this can only be
 performed when the `--unsafe_tactic_exec` options was provided for the
 current F* invocation. The tactic will fail if this is not so. *)
-assume val launch_process : string -> string -> string -> Tac string
+assume val launch_process : string -> list string -> string -> Tac string
 
 (** Get a fresh bv of some name and type. The name is only useful
 for pretty-printing, since there is a fresh unaccessible integer within
@@ -319,3 +316,6 @@ assume val set_goals     : list goal -> Tac unit
 implicits. TODO: This is a really bad name, there's no special "SMT"
 about these goals. *)
 assume val set_smt_goals : list goal -> Tac unit
+
+(** [curms ()] returns the current (wall) time in millseconds *)
+assume val curms : unit -> Tac int

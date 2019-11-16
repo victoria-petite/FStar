@@ -75,7 +75,7 @@ private val gst_witness: p:mem_predicate -> GST unit (fun post h0 -> p h0 /\ sta
 private val gst_recall:  p:mem_predicate -> GST unit (fun post h0 -> witnessed p /\ (p h0 ==> post () h0))
 
 val lemma_functoriality (p:mem_predicate{witnessed p}) (q:mem_predicate{(forall (h:mem). p h ==> q h)})
-  : Lemma (ensures (witnessed q))
+  : Lemma (witnessed q)
 
 let st_pre   = gst_pre
 let st_post' = gst_post'
@@ -498,7 +498,7 @@ val testify_forall (#c:Type) (#p:(c -> mem -> Type0))
   :ST unit (requires (fun h      -> True))
            (ensures (fun h0 _ h1 -> h0==h1 /\ (forall (x:c). p x h1)))
 
-val testify_forall_region_contains_pred (#c:Type) (#p:(c -> rid))
+val testify_forall_region_contains_pred (#c:Type) (#p:(c -> GTot rid))
   ($s:squash (forall (x:c). witnessed (region_contains_pred (p x))))
   :ST unit (requires (fun _       -> True))
            (ensures  (fun h0 _ h1 -> h0 == h1 /\
@@ -506,6 +506,7 @@ val testify_forall_region_contains_pred (#c:Type) (#p:(c -> rid))
 
 
 (****** Begin: preferred API for witnessing and recalling predicates ******)
+
 
 val token_p (#a:Type0) (#rel:preorder a) (r:mreference a rel) (p:mem_predicate) :Type0
 
@@ -516,6 +517,12 @@ val witness_p (#a:Type0) (#rel:preorder a) (r:mreference a rel) (p:mem_predicate
 val recall_p (#a:Type0) (#rel:preorder a) (r:mreference a rel) (p:mem_predicate)
   :ST unit (fun h0      -> ((is_eternal_region (HS.frameOf r) /\ not (HS.is_mm r)) \/ h0 `HS.contains` r) /\ token_p r p)
            (fun h0 _ h1 -> h0 == h1 /\ h0 `HS.contains` r /\ p h0)
+
+val token_functoriality
+  (#a:Type0) (#rel:preorder a) (r:mreference a rel)
+  (p:mem_predicate{token_p r p}) (q:mem_predicate{forall (h:mem). p h ==> q h})
+  : Lemma (token_p r q)
+
 
 (****** End: preferred API for witnessing and recalling predicates ******)
 

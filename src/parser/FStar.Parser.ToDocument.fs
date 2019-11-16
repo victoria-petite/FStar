@@ -254,7 +254,7 @@ let rec extract_from_list e = match e.tm with
 
 let is_array e = match e.tm with
     (* TODO check that there is no implicit parameters *)
-    | App ({tm=Var lid}, l, Nothing) -> lid_equals lid C.array_mk_array_lid && is_list l
+    | App ({tm=Var lid}, l, Nothing) -> lid_equals lid C.array_of_list_lid && is_list l
     | _ -> false
 
 let rec is_ref_set e = match e.tm with
@@ -785,6 +785,7 @@ and p_pragma = function
   | ResetOptions s_opt -> str "#reset-options" ^^ optional (fun s -> space ^^ dquotes (str s)) s_opt
   | PushOptions s_opt -> str "#push-options" ^^ optional (fun s -> space ^^ dquotes (str s)) s_opt
   | PopOptions -> str "#pop-options"
+  | RestartSolver -> str "#restart-solver"
   | LightOff ->
       should_print_fs_typ_app := true ;
       str "#light \"off\""
@@ -1380,8 +1381,8 @@ and p_typ ps pb e = with_comment (p_typ' ps pb) e e.range
 and p_typ_sep ps pb e = with_comment_sep (p_typ' ps pb) e e.range
 
 and p_typ' ps pb e = match e.tm with
-  | QForall (bs, trigger, e1)
-  | QExists (bs, trigger, e1) ->
+  | QForall (bs, (_, trigger), e1)
+  | QExists (bs, (_, trigger), e1) ->
       let binders_doc = p_binders true bs in
       let term_doc = p_noSeqTermAndComment ps pb e1 in
       //VD: We could dispense with this pattern matching if we removed trailing whitespace after the fact

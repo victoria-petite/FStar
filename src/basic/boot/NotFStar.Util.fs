@@ -31,6 +31,9 @@ let return_all x = x
 
 type time = System.DateTime
 let now () = System.DateTime.Now
+let now_ms () =
+    let t = now () in
+    t.Second * 1000 + t.Millisecond
 let time_diff (t1:time) (t2:time) : float * int =
     let ts = t2 - t1 in
     ts.TotalSeconds, int32 ts.TotalMilliseconds
@@ -185,6 +188,7 @@ let run_process (id: string) (prog: string) (args: list<string>) (stdin: option<
   proc.StartInfo <- pinfo;
   let result = proc.Start() in
   (match stdin with Some s -> proc.StandardInput.Write(s) | None -> ());
+  proc.StandardInput.Close();
   let stdout = proc.StandardOutput.ReadToEnd() in
   let stderr = proc.StandardError.ReadToEnd() in
   stdout ^ stderr
@@ -201,6 +205,17 @@ let read_line (s:stream_reader) =
     if is_end_of_stream s
     then None
     else Some <| s.ReadLine()
+
+open FStar.String
+
+let nread (s:stream_reader) (count:int) =
+    if is_end_of_stream s
+    then None
+    else
+      let b = Array.create count 'a' in
+      s.Read(b, 0, count) |> ignore;
+      Some <| string_of_list (List.of_array b)
+
 type string_builder = System.Text.StringBuilder (* not relying on representation *)
 let new_string_builder () = new System.Text.StringBuilder()
 let clear_string_builder (s:string_builder) = s.Clear() |> ignore
@@ -306,6 +321,9 @@ let smap_copy (m:smap<'value>) =
     smap_fold m (fun k v () -> smap_add n k v) ();
     n
 let smap_size (m:smap<'value>) = m.Count
+let smap_iter<'a> (m: smap<'a>) (f: string -> 'a -> unit) =
+  for i in m  do
+    f i.Key i.Value
 
 type psmap<'value> = Collections.Map<string,'value>
 let psmap_empty (_: unit) : psmap<'value> = Collections.Map.empty
@@ -320,6 +338,11 @@ let psmap_find_map (m:psmap<'value>) f =
   Collections.Map.tryPick f m
 let psmap_modify (m:psmap<'value>) (k: string) (upd: option<'value> -> 'value) =
   Collections.Map.add k (upd <| Collections.Map.tryFind k m) m
+let psmap_merge (m1:psmap<'value>) (m2:psmap<'value>) =
+  (* Slow :(, but there doesn't seem to be a primitive for it:
+   * https://github.com/fsharp/fslang-suggestions/issues/560
+   *)
+  psmap_fold m1 (fun k v m -> psmap_add m k v) m2
 
 type imap<'value>=System.Collections.Generic.Dictionary<int,'value>
 let imap_create<'value> (i:int) = new Dictionary<int,'value>(i)
@@ -527,6 +550,10 @@ let remove_dups f l =
    | _ -> out in
    aux [] l
 
+
+let is_none = function
+  | None -> true
+  | Some _ -> false
 
 let is_some = function
   | None -> false
@@ -871,6 +898,37 @@ let load_value_from_file (fname:string) =
   | e ->
     printfn "Failed to load file because: %A" e;
     None
+
+let save_2values_to_file (fname:string) value1 value2 =
+  try
+    use writer = new System.IO.FileStream(fname,
+                                          FileMode.OpenOrCreate,
+                                          FileAccess.Write,
+                                          FileShare.Write) in
+    let formatter = new System.Runtime.Serialization.Formatters.Binary.BinaryFormatter() in
+    formatter.Serialize(writer, value1)
+    formatter.Serialize(writer, value2)
+  with
+  | e ->
+    printfn "Failed to write value to file because: %A" e;
+    raise e
+
+let load_2values_from_file (fname:string) =
+  try
+    use reader = new System.IO.FileStream(fname,
+                                          FileMode.Open,
+                                          FileAccess.Read,
+                                          FileShare.Read) in
+    let formatter = new System.Runtime.Serialization.Formatters.Binary.BinaryFormatter() in
+    let result1 = formatter.Deserialize(reader) :?> 'a in
+    let result2 = formatter.Deserialize(reader) :?> 'b in
+    Some (result1, result2)
+  with
+  | e ->
+    printfn "Failed to load file because: %A" e;
+    None
+
+
 
 let print_exn (e: exn): string =
   e.Message
